@@ -6,8 +6,37 @@ const morgan = require('morgan');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
-app.use(cors({ origin: 'https://bullrise-inventory-frontend.vercel.app'}));
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://bullrise-inventory-frontend.vercel.app'
+];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // Allow requests without origin (Postman, mobile apps, curl)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-Requested-With'
+    ]
+  })
+);
 app.use(express.json());
+app.get('/', (req, res) => {
+  res.send('Bullrise - API Running');
+});
 app.use(morgan('dev'));
 
 app.get('/api/health', (req, res) => res.json({ success: true, message: 'Bullrise API running' }));
