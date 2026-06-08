@@ -6,7 +6,7 @@ const morgan = require('morgan');
 const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 
 const app = express();
-app.use(cors({ origin: process.env.CLIENT_URL || '*' }));
+app.use(cors({ origin: 'https://bullrise-inventory-frontend.vercel.app'}));
 app.use(express.json());
 app.use(morgan('dev'));
 
