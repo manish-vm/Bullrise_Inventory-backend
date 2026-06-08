@@ -1,0 +1,19 @@
+{
+    "scripts": {
+        "dev": "nodemon server.js",
+        "start": "node server.js",
+        "seed": "node seed/seed.js"
+    },
+    "dependencies": {
+        "cors": "latest",
+        "dotenv": "latest",
+        "express": "latest",
+        "express-async-handler": "latest",
+        "mongoose": "latest",
+        "morgan": "latest"
+    },
+    "devDependencies": {
+        "nodemon": "latest"
+    },
+    "type": "commonjs"
+}
