@@ -7,7 +7,22 @@ const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { allowRoles, protect } = require('./middleware/authMiddleware');
 
 const app = express();
-app.use(cors({ origin: 'https://bullrise-inventory-frontend.vercel.app/'}));
+const normalizeOrigin = (origin) => String(origin || '').trim().replace(/\/+$/, '');
+const allowedOrigins = String(process.env.CLIENT_URL || '')
+  .split(',')
+  .map(normalizeOrigin)
+  .filter(Boolean);
+const corsOptions = {
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(normalizeOrigin(origin))) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error(`CORS blocked origin: ${origin}`));
+  },
+};
+
+app.use(cors(corsOptions));
 app.use(express.json());
 app.use(morgan('dev'));
 
