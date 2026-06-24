@@ -333,10 +333,6 @@ exports.deleteQCInspection = asyncHandler(async (req, res) => {
 });
 
 exports.getProductionTracking = asyncHandler(async (req, res) => {
-  const workOrders = await JobCard.distinct('woNumber');
-  await Promise.all(workOrders.map((woNumber) => syncWorkOrderStageInputs(woNumber)));
-  const cards = await JobCard.find();
-  await Promise.all(cards.map((card) => syncProductionTracking(card)));
   const rows = await ProductionTracking.find().sort({ lastUpdated: -1 });
   const target = rows.reduce((sum, row) => sum + row.targetQty, 0);
   const produced = rows.reduce((sum, row) => sum + row.producedQty, 0);
@@ -436,8 +432,6 @@ exports.getProductionPlanning = asyncHandler(async (req, res) => {
 });
 
 exports.getJobCards = asyncHandler(async (req, res) => {
-  const workOrders = await JobCard.distinct('woNumber');
-  await Promise.all(workOrders.map((woNumber) => syncWorkOrderStageInputs(woNumber)));
   const rows = await JobCard.find().sort({ woNumber: -1, createdAt: 1 });
   const count = (status) => rows.filter((row) => row.status === status).length;
   const priorityCount = (priority) => rows.filter((row) => row.priority === priority).length;
@@ -510,7 +504,9 @@ exports.generateStageJobCards = asyncHandler(async (req, res) => {
 
   const existing = await JobCard.find({ woNumber: workOrder.woNumber });
   if (existing.length) {
-    ok(res, existing, 'Stage job cards already exist');
+    const synced = await syncWorkOrderStageInputs(workOrder.woNumber);
+    await Promise.all(synced.map((card) => syncProductionTracking(card)));
+    ok(res, synced, 'Stage job cards already exist');
     return;
   }
 
