@@ -7,7 +7,7 @@ const { notFound, errorHandler } = require('./middleware/errorMiddleware');
 const { allowRoles, protect } = require('./middleware/authMiddleware');
 
 const app = express();
-app.use(cors({ origin: 'https://bullrise-inventory-frontend.vercel.app}));
+app.use(cors({ origin: 'https://bullrise-inventory-frontend.vercel.app'}));
 app.use(express.json());
 app.use(morgan('dev'));
 
