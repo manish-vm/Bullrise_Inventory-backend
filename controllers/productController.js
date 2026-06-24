@@ -22,7 +22,7 @@ const buildFilter = ({ search = '', category, department, status }) => {
 };
 
 exports.getProducts = asyncHandler(async (req, res) => {
-  const { sort = '-createdOn', page = 1, limit = 8 } = req.query;
+  const { sort = '-createdOn', page = 1, limit = 10 } = req.query;
   const pageNumber = Number(page);
   const pageSize = Number(limit);
   const filter = buildFilter(req.query);

@@ -16,7 +16,7 @@ const resources = {
     Model: ProductVariant,
     module: 'product-variants',
     searchFields: ['variantId', 'product', 'sku', 'category'],
-    defaultSort: 'variantId'
+    defaultSort: '-createdOn'
   },
   attributes: {
     Model: ProductAttribute,

@@ -1,7 +1,7 @@
 const asyncHandler = require('express-async-handler');
 const Production = require('../models/Production');
 const Activity = require('../models/Activity');
-const { ok } = require('../utils/apiResponse');
+const { ok, created } = require('../utils/apiResponse');
 
 const colors = ['#16a34a', '#2f80ed', '#8b5cf6', '#f97316', '#ef4444'];
 const pct = (part, total) => total ? Number(((part / total) * 100).toFixed(1)) : 0;
@@ -69,4 +69,34 @@ exports.getProduction = asyncHandler(async (req, res) => {
     trend,
     activities: await Activity.find({ module: 'production' }).sort({ createdAt: -1 }).limit(5)
   });
+});
+
+exports.createProduction = asyncHandler(async (req, res) => {
+  const item = await Production.create({
+    ...req.body,
+    targetQty: Number(req.body.targetQty || 0),
+    producedQty: Number(req.body.producedQty || 0),
+    rejectedQty: Number(req.body.rejectedQty || 0),
+    productionDate: req.body.productionDate ? new Date(req.body.productionDate) : new Date()
+  });
+  await Activity.create({
+    module: 'production',
+    title: `${item.productionId} created`,
+    description: `${item.productStyle || item.woNumber} production entry created`,
+    dateText: new Date().toLocaleString(),
+    type: 'success'
+  });
+  created(res, item);
+});
+
+exports.updateProduction = asyncHandler(async (req, res) => {
+  const item = await Production.findById(req.params.id);
+  if (!item) throw new Error('Production entry not found');
+  Object.assign(item, req.body);
+  item.targetQty = Number(req.body.targetQty ?? item.targetQty ?? 0);
+  item.producedQty = Number(req.body.producedQty ?? item.producedQty ?? 0);
+  item.rejectedQty = Number(req.body.rejectedQty ?? item.rejectedQty ?? 0);
+  if (req.body.productionDate) item.productionDate = new Date(req.body.productionDate);
+  await item.save();
+  ok(res, item, 'Production entry updated');
 });

@@ -5,7 +5,7 @@ const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
 
 exports.getStockReturns = asyncHandler(async (req, res) => {
-  const { search = '', status, supplier, category, page = 1, limit = 8 } = req.query;
+  const { search = '', status, supplier, category, page = 1, limit = 10 } = req.query;
   const filter = {};
 
   if (search) {

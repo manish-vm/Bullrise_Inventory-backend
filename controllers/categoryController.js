@@ -3,7 +3,7 @@ const MaterialCategory = require('../models/MaterialCategory');
 const { ok, created } = require('../utils/apiResponse');
 
 exports.getCategories = asyncHandler(async (req, res) => {
-  const { search = '', status, sort = 'name', page = 1, limit = 12 } = req.query;
+  const { search = '', status, sort = 'name', page = 1, limit = 10 } = req.query;
   const filter = {};
   if (search) filter.name = new RegExp(search, 'i');
   if (status && status !== 'All Status') filter.status = status;

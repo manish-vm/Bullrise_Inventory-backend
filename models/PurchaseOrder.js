@@ -1,11 +1,17 @@
 const mongoose = require('mongoose');
 
 const purchaseOrderItemSchema = new mongoose.Schema({
+  lineNo: Number,
   materialName: String,
   category: String,
-  quantity: Number,
-  unitPrice: Number,
-  amount: Number
+  quantity: { type: Number, default: 0 },
+  unit: { type: String, default: 'm' },
+  unitPrice: { type: Number, default: 0 },
+  amount: { type: Number, default: 0 },
+  receivedQuantity: { type: Number, default: 0 },
+  rejectedQuantity: { type: Number, default: 0 },
+  balanceQuantity: { type: Number, default: 0 },
+  status: { type: String, enum: ['Open', 'Partially Received', 'Completed', 'Rejected'], default: 'Open' }
 }, { _id: false });
 
 const purchaseOrderSchema = new mongoose.Schema({
@@ -16,6 +22,8 @@ const purchaseOrderSchema = new mongoose.Schema({
   orderDate: Date,
   expectedDate: Date,
   totalAmount: { type: Number, default: 0 },
+  orderedQuantity: { type: Number, default: 0 },
+  receivedQuantity: { type: Number, default: 0 },
   status: { type: String, enum: ['Open', 'Partially Received', 'Completed', 'Cancelled'], default: 'Open' },
   items: [purchaseOrderItemSchema]
 }, { timestamps: true });

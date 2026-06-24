@@ -10,7 +10,7 @@ const productSchema = new mongoose.Schema({
   productCount: { type: Number, default: 1 },
   variants: { type: Number, default: 0 },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
-  createdOn: { type: Date, required: true },
+  createdOn: { type: Date, default: Date.now },
   color: { type: String, default: 'green' }
 }, { timestamps: true });
 

@@ -4,7 +4,7 @@ const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
 
 exports.getSuppliers = asyncHandler(async (req, res) => {
-  const { search = '', status, category, city, page = 1, limit = 8 } = req.query;
+  const { search = '', status, category, city, page = 1, limit = 10 } = req.query;
   const filter = {};
   if (search) filter.$or = [{ name: new RegExp(search, 'i') }, { supplierCode: new RegExp(search, 'i') }, { contactPerson: new RegExp(search, 'i') }];
   if (status && status !== 'All Status') filter.status = status;

@@ -59,3 +59,27 @@ exports.getWarehouses = asyncHandler(async (req, res) => {
 });
 
 exports.createWarehouse = asyncHandler(async (req, res) => created(res, await Warehouse.create(req.body)));
+
+exports.getWarehouse = asyncHandler(async (req, res) => {
+  const warehouse = await Warehouse.findById(req.params.id);
+  if (!warehouse) throw new Error('Warehouse not found');
+  ok(res, warehouse);
+});
+
+exports.updateWarehouse = asyncHandler(async (req, res) => {
+  const warehouse = await Warehouse.findByIdAndUpdate(req.params.id, req.body, {
+    new: true,
+    runValidators: true
+  });
+  if (!warehouse) throw new Error('Warehouse not found');
+
+  await Activity.create({
+    module: 'warehouse-overview',
+    title: `${warehouse.code} updated`,
+    description: `${warehouse.name} warehouse details updated`,
+    dateText: new Date().toLocaleString(),
+    type: 'purple'
+  });
+
+  ok(res, warehouse, 'Warehouse updated');
+});

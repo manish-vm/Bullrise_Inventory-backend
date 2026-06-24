@@ -9,7 +9,7 @@ const productVariantSchema = new mongoose.Schema({
   price: { type: Number, required: true },
   stock: { type: Number, default: 0 },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
-  createdOn: { type: Date, required: true },
+  createdOn: { type: Date, default: Date.now },
   color: { type: String, default: 'black' }
 }, { timestamps: true });
 
