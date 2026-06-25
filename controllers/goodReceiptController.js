@@ -10,6 +10,24 @@ function lineKey(line = {}) {
   return String(line.poLineNo || line.lineNo || line.materialName || line.category || '').toLowerCase();
 }
 
+function poLineItems(po) {
+  if (!po) return [];
+  if (po.items?.length) return po.items;
+
+  return [{
+    lineNo: 1,
+    materialName: po.category || 'Raw Material',
+    category: po.category,
+    quantity: Number(po.orderedQuantity || 0),
+    receivedQuantity: Number(po.receivedQuantity || 0),
+    rejectedQuantity: 0,
+    unit: 'm',
+    unitPrice: Number(po.orderedQuantity || 0) ? Number(po.totalAmount || 0) / Number(po.orderedQuantity || 1) : 0,
+    amount: Number(po.totalAmount || 0),
+    status: po.status || 'Open'
+  }];
+}
+
 function receiptLinesFromBody(body, po) {
   if (body.items?.length) {
     return body.items.map((line, index) => ({
@@ -23,7 +41,8 @@ function receiptLinesFromBody(body, po) {
     }));
   }
 
-  const poItem = po?.items?.find((item) => item.category === body.category) || po?.items?.[0];
+  const poItems = poLineItems(po);
+  const poItem = poItems.find((item) => String(item.category || '').toLowerCase() === String(body.category || '').toLowerCase()) || poItems[0];
   const quantity = Number(body.quantity || 0);
   return [{
     poLineNo: poItem?.lineNo || 1,
@@ -63,7 +82,8 @@ async function approvedReceiptTotals(poNumber, excludeReceiptId) {
 async function syncPurchaseOrderFromReceipts(po) {
   if (!po) return;
   const totals = await approvedReceiptTotals(po.poNumber);
-  po.items = (po.items || []).map((item, index) => {
+  const sourceItems = poLineItems(po);
+  po.items = sourceItems.map((item, index) => {
     const key = String(item.lineNo || index + 1).toLowerCase();
     const materialKey = String(item.materialName || '').toLowerCase();
     const lineTotals = totals[key] || totals[materialKey] || { accepted: 0, rejected: 0 };
@@ -89,8 +109,13 @@ async function syncPurchaseOrderFromReceipts(po) {
 async function assertReceiptWithinBalance(po, receiptLines, excludeReceiptId) {
   if (!po) return;
   const totals = await approvedReceiptTotals(po.poNumber, excludeReceiptId);
+  const poItems = poLineItems(po);
   for (const line of receiptLines) {
-    const poItem = po.items.find((item, index) => String(item.lineNo || index + 1) === String(line.poLineNo) || String(item.materialName || '').toLowerCase() === String(line.materialName || '').toLowerCase());
+    const poItem = poItems.find((item, index) => (
+      String(item.lineNo || index + 1) === String(line.poLineNo) ||
+      String(item.materialName || '').toLowerCase() === String(line.materialName || '').toLowerCase() ||
+      String(item.category || '').toLowerCase() === String(line.category || '').toLowerCase()
+    ));
     if (!poItem) throw new Error(`PO line not found for ${line.materialName || line.poLineNo}`);
     const key = String(poItem.lineNo || 1).toLowerCase();
     const materialKey = String(poItem.materialName || '').toLowerCase();
