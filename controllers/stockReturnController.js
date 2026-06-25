@@ -24,7 +24,7 @@ exports.getStockReturns = asyncHandler(async (req, res) => {
   const perPage = Number(limit);
   const items = await StockReturn.find(filter)
     .populate('supplier')
-    .sort({ returnDate: -1 })
+    .sort({ createdAt: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage);
   const total = await StockReturn.countDocuments(filter);

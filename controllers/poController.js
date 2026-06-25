@@ -26,12 +26,11 @@ function normalizeItems(items = []) {
 
 function applyPoTotals(po) {
   po.items = normalizeItems(po.items || []);
-  po.orderedQuantity = po.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  po.receivedQuantity = po.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
+  const itemQuantity = po.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+  const itemReceivedQuantity = po.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
+  po.orderedQuantity = itemQuantity || Number(po.orderedQuantity || 0);
+  po.receivedQuantity = itemReceivedQuantity || Number(po.receivedQuantity || 0);
   po.totalAmount = po.totalAmount || po.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  if (po.receivedQuantity <= 0) po.status = po.status === 'Cancelled' ? 'Cancelled' : 'Open';
-  else if (po.receivedQuantity >= po.orderedQuantity) po.status = 'Completed';
-  else po.status = 'Partially Received';
 }
 
 exports.getPurchaseOrders = asyncHandler(async (req, res) => {
@@ -41,13 +40,19 @@ exports.getPurchaseOrders = asyncHandler(async (req, res) => {
   if (status && status !== 'All Status') filter.status = status;
   if (supplier && supplier !== 'All Suppliers') filter.supplierName = supplier;
   if (category && category !== 'All Categories') filter.category = category;
-  const items = await PurchaseOrder.find(filter).populate('supplier').sort({ orderDate: -1 }).skip((page - 1) * limit).limit(Number(limit));
+  const items = await PurchaseOrder.find(filter).populate('supplier').sort({ createdAt: -1 }).skip((page - 1) * limit).limit(Number(limit));
   const total = await PurchaseOrder.countDocuments(filter);
   ok(res, { items, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
 });
 exports.createPurchaseOrder = asyncHandler(async (req, res) => {
   const supplier = await Supplier.findById(req.body.supplier);
   const payload = { ...req.body, supplierName: req.body.supplierName || supplier?.name };
+  if (req.body.orderedQuantity != null && payload.items?.length === 1) {
+    payload.items[0].quantity = Number(req.body.orderedQuantity || 0);
+  }
+  if (req.body.receivedQuantity != null && payload.items?.length === 1) {
+    payload.items[0].receivedQuantity = Number(req.body.receivedQuantity || 0);
+  }
   payload.items = normalizeItems(payload.items || []);
   payload.orderedQuantity = payload.orderedQuantity || payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
   payload.totalAmount = payload.totalAmount || payload.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
@@ -60,6 +65,12 @@ exports.updatePurchaseOrder = asyncHandler(async (req, res) => {
   const po = await PurchaseOrder.findById(req.params.id);
   if (!po) throw new Error('Purchase order not found');
   Object.assign(po, req.body);
+  if (req.body.orderedQuantity != null && po.items?.length === 1) {
+    po.items[0].quantity = Number(req.body.orderedQuantity || 0);
+  }
+  if (req.body.receivedQuantity != null && po.items?.length === 1) {
+    po.items[0].receivedQuantity = Number(req.body.receivedQuantity || 0);
+  }
   applyPoTotals(po);
   await po.save();
   ok(res, po);

@@ -44,6 +44,12 @@ async function receiveRawMaterialFromGRN(receipt) {
   }];
 
   const stocks = [];
+  const acceptedTotal = lines.reduce((sum, line) => {
+    const receivedQuantity = Number(line.receivedQuantity || line.acceptedQuantity || 0);
+    const acceptedQuantity = Number(line.acceptedQuantity ?? (receipt.status === 'Completed' ? receivedQuantity : 0));
+    return sum + acceptedQuantity;
+  }, 0);
+  const fallbackUnitCost = acceptedTotal ? Number(receipt.receiptValue || 0) / acceptedTotal : 0;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index];
@@ -52,7 +58,7 @@ async function receiveRawMaterialFromGRN(receipt) {
 
     const acceptedQuantity = Number(line.acceptedQuantity ?? (receipt.status === 'Completed' ? receivedQuantity : 0));
     const rejectedQuantity = Number(line.rejectedQuantity || 0);
-    const unitCost = Number(line.unitCost || (receivedQuantity ? Number(line.totalValue || 0) / receivedQuantity : 0));
+    const unitCost = Number(line.unitCost || (acceptedQuantity ? Number(line.totalValue || 0) / acceptedQuantity : 0) || fallbackUnitCost);
     const materialName = line.materialName || line.category || receipt.category || 'Raw Material';
     const category = line.category || receipt.category;
     const batchNo = line.batchNo || `${receipt.grnNumber}-B${index + 1}`;

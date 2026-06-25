@@ -1,5 +1,6 @@
 const asyncHandler = require('express-async-handler');
 const Product = require('../models/Product');
+const ProductVariant = require('../models/ProductVariant');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
 
@@ -21,16 +22,35 @@ const buildFilter = ({ search = '', category, department, status }) => {
   return filter;
 };
 
+async function getVariantCounts() {
+  const rows = await ProductVariant.aggregate([
+    { $group: { _id: '$product', count: { $sum: 1 } } }
+  ]);
+
+  return rows.reduce((counts, row) => {
+    if (row._id) counts[row._id] = row.count;
+    return counts;
+  }, {});
+}
+
+function withVariantCount(product, counts) {
+  const item = product.toObject ? product.toObject() : product;
+  return { ...item, variants: counts[item.name] || 0 };
+}
+
 exports.getProducts = asyncHandler(async (req, res) => {
-  const { sort = '-createdOn', page = 1, limit = 10 } = req.query;
+  const { sort = '-createdAt', page = 1, limit = 10 } = req.query;
   const pageNumber = Number(page);
   const pageSize = Number(limit);
   const filter = buildFilter(req.query);
-  const items = await Product.find(filter).sort(sort).skip((pageNumber - 1) * pageSize).limit(pageSize);
-  const total = await Product.countDocuments(filter);
+  const [items, total, variantCounts] = await Promise.all([
+    Product.find(filter).sort(sort).skip((pageNumber - 1) * pageSize).limit(pageSize),
+    Product.countDocuments(filter),
+    getVariantCounts()
+  ]);
 
   ok(res, {
-    items,
+    items: items.map((item) => withVariantCount(item, variantCounts)),
     total,
     page: pageNumber,
     pages: Math.ceil(total / pageSize)
@@ -46,7 +66,11 @@ exports.deleteProduct = asyncHandler(async (req, res) => {
 });
 
 exports.getProductStats = asyncHandler(async (req, res) => {
-  const rows = await Product.find().sort('-createdOn');
+  const [products, variantCounts] = await Promise.all([
+    Product.find().sort('-createdAt'),
+    getVariantCounts()
+  ]);
+  const rows = products.map((product) => withVariantCount(product, variantCounts));
   const totalProducts = rows.reduce((sum, product) => sum + (product.productCount || 1), 0);
   const activeProducts = rows.filter((product) => product.status === 'Active').reduce((sum, product) => sum + (product.productCount || 1), 0);
   const inactiveProducts = totalProducts - activeProducts;
@@ -66,7 +90,7 @@ exports.getProductStats = asyncHandler(async (req, res) => {
     activeProducts,
     inactiveProducts,
     totalCategories: Math.max(categories.length, 18),
-    totalVariants: Math.max(totalVariants, 3560),
+    totalVariants,
     categoryDistribution: categoryTotals,
     topProducts: rows
       .slice()

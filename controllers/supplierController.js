@@ -1,7 +1,24 @@
 const asyncHandler = require('express-async-handler');
 const Supplier = require('../models/Supplier');
+const PurchaseOrder = require('../models/PurchaseOrder');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
+
+async function getOrderCounts() {
+  const rows = await PurchaseOrder.aggregate([
+    { $group: { _id: '$supplier', ordersCount: { $sum: 1 } } }
+  ]);
+
+  return rows.reduce((counts, row) => {
+    if (row._id) counts[String(row._id)] = row.ordersCount;
+    return counts;
+  }, {});
+}
+
+function withOrderCount(supplier, counts) {
+  const item = supplier.toObject ? supplier.toObject() : supplier;
+  return { ...item, ordersCount: counts[String(item._id)] || 0 };
+}
 
 exports.getSuppliers = asyncHandler(async (req, res) => {
   const { search = '', status, category, city, page = 1, limit = 10 } = req.query;
@@ -11,11 +28,12 @@ exports.getSuppliers = asyncHandler(async (req, res) => {
   if (category && category !== 'All Categories') filter.category = category;
   if (city && city !== 'All Cities') filter.city = city;
   const skip = (Number(page) - 1) * Number(limit);
-  const [items, total] = await Promise.all([
+  const [items, total, orderCounts] = await Promise.all([
     Supplier.find(filter).sort({ createdAt: -1 }).skip(skip).limit(Number(limit)),
-    Supplier.countDocuments(filter)
+    Supplier.countDocuments(filter),
+    getOrderCounts()
   ]);
-  ok(res, { items, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
+  ok(res, { items: items.map((item) => withOrderCount(item, orderCounts)), total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
 });
 
 exports.createSupplier = asyncHandler(async (req, res) => {
@@ -24,14 +42,21 @@ exports.createSupplier = asyncHandler(async (req, res) => {
   created(res, supplier);
 });
 
-exports.getSupplier = asyncHandler(async (req, res) => ok(res, await Supplier.findById(req.params.id)));
+exports.getSupplier = asyncHandler(async (req, res) => {
+  const [supplier, orderCounts] = await Promise.all([
+    Supplier.findById(req.params.id),
+    getOrderCounts()
+  ]);
+  ok(res, supplier ? withOrderCount(supplier, orderCounts) : supplier);
+});
 exports.updateSupplier = asyncHandler(async (req, res) => ok(res, await Supplier.findByIdAndUpdate(req.params.id, req.body, { new: true })));
 exports.deleteSupplier = asyncHandler(async (req, res) => { await Supplier.findByIdAndDelete(req.params.id); ok(res, null, 'Deleted'); });
 
 exports.getSupplierStats = asyncHandler(async (req, res) => {
-  const [total, active, inactive, rows] = await Promise.all([
-    Supplier.countDocuments(), Supplier.countDocuments({ status: 'Active' }), Supplier.countDocuments({ status: 'Inactive' }), Supplier.find()
+  const [total, active, inactive, suppliers, orderCounts] = await Promise.all([
+    Supplier.countDocuments(), Supplier.countDocuments({ status: 'Active' }), Supplier.countDocuments({ status: 'Inactive' }), Supplier.find(), getOrderCounts()
   ]);
+  const rows = suppliers.map((supplier) => withOrderCount(supplier, orderCounts));
   const byCategory = Object.values(rows.reduce((acc, s) => {
     acc[s.category] ||= { label: s.category, value: 0 };
     acc[s.category].value += 1;

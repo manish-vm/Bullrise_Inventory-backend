@@ -10,19 +10,19 @@ const resources = {
     Model: ProductCategory,
     module: 'product-categories',
     searchFields: ['name', 'description', 'department'],
-    defaultSort: '-products'
+    defaultSort: '-createdAt'
   },
   variants: {
     Model: ProductVariant,
     module: 'product-variants',
     searchFields: ['variantId', 'product', 'sku', 'category'],
-    defaultSort: '-createdOn'
+    defaultSort: '-createdAt'
   },
   attributes: {
     Model: ProductAttribute,
     module: 'product-attributes',
     searchFields: ['name', 'type', 'inputType'],
-    defaultSort: '-usedInVariants'
+    defaultSort: '-createdAt'
   }
 };
 

@@ -42,7 +42,7 @@ exports.list = asyncHandler(async (req, res) => {
   const perPage = Number(limit);
   const skip = (Number(page) - 1) * perPage;
   const [items, total] = await Promise.all([
-    BillOfMaterial.find(filter).populate('product variant').sort('-updatedAt').skip(skip).limit(perPage),
+    BillOfMaterial.find(filter).populate('product variant').sort('-createdAt').skip(skip).limit(perPage),
     BillOfMaterial.countDocuments(filter)
   ]);
   ok(res, { items, total, page: Number(page), pages: Math.ceil(total / perPage) });

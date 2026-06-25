@@ -52,7 +52,7 @@ exports.getWarehouses = asyncHandler(async (req, res) => {
   if (location && location !== 'All Locations') filter.location = location;
 
   const perPage = Number(limit);
-  const items = await Warehouse.find(filter).sort({ code: 1 }).skip((page - 1) * perPage).limit(perPage);
+  const items = await Warehouse.find(filter).sort({ createdAt: -1 }).skip((page - 1) * perPage).limit(perPage);
   const total = await Warehouse.countDocuments(filter);
 
   ok(res, { items, total, page: Number(page), pages: Math.ceil(total / perPage) });

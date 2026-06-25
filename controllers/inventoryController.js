@@ -2,13 +2,14 @@ const asyncHandler = require('express-async-handler');
 const RawMaterialStock = require('../models/RawMaterialStock');
 const MaterialBatch = require('../models/MaterialBatch');
 const StockMovement = require('../models/StockMovement');
+const GoodReceipt = require('../models/GoodReceipt');
 const FinishedGoodsStock = require('../models/FinishedGoodsStock');
 const WarehouseLocation = require('../models/WarehouseLocation');
 const Warehouse = require('../models/Warehouse');
 const BarcodeLabel = require('../models/BarcodeLabel');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
-const { createMovement, statusFor } = require('../services/stockService');
+const { createMovement, receiveRawMaterialFromGRN, statusFor } = require('../services/stockService');
 
 const pageParams = (query) => {
   const page = Number(query.page || 1);
@@ -26,7 +27,44 @@ const dateFilter = (query) => {
   return filter;
 };
 
+async function repairZeroValueRawMaterialStock(items) {
+  await Promise.all(items.map(async (item) => {
+    if (Number(item.totalValue || 0) > 0 || Number(item.availableQuantity || 0) <= 0) return;
+    const batches = await MaterialBatch.find({
+      materialName: item.materialName,
+      category: item.category,
+      supplier: item.supplier || undefined
+    });
+    let totalValue = batches.reduce((sum, batch) => sum + Number(batch.totalValue || 0), 0);
+    if (totalValue <= 0) {
+      const grnIds = batches.map((batch) => batch.grn).filter(Boolean);
+      const receipts = await GoodReceipt.find({ _id: { $in: grnIds } });
+      totalValue = receipts.reduce((sum, receipt) => sum + Number(receipt.receiptValue || 0), 0);
+    }
+    if (totalValue <= 0) return;
+    item.totalValue = totalValue;
+    item.unitCost = totalValue / Number(item.availableQuantity || 1);
+    await item.save();
+  }));
+}
+
+async function postMissingCompletedGrns() {
+  const receipts = await GoodReceipt.find({
+    status: 'Completed',
+    stockPosted: { $ne: true }
+  });
+
+  await Promise.all(receipts.map(async (receipt) => {
+    await receiveRawMaterialFromGRN(receipt);
+    receipt.stockPosted = true;
+    receipt.approvedBy = receipt.approvedBy || 'System';
+    receipt.approvedAt = receipt.approvedAt || new Date();
+    await receipt.save();
+  }));
+}
+
 exports.listRawMaterialStock = asyncHandler(async (req, res) => {
+  await postMissingCompletedGrns();
   const { search = '', category, status, warehouse } = req.query;
   const { page, limit, skip } = pageParams(req.query);
   const filter = {};
@@ -36,14 +74,17 @@ exports.listRawMaterialStock = asyncHandler(async (req, res) => {
   if (warehouse) filter.warehouse = warehouse;
 
   const [items, total] = await Promise.all([
-    RawMaterialStock.find(filter).populate('warehouse location').sort('-updatedAt').skip(skip).limit(limit),
+    RawMaterialStock.find(filter).populate('warehouse location').sort('-createdAt').skip(skip).limit(limit),
     RawMaterialStock.countDocuments(filter)
   ]);
+  await repairZeroValueRawMaterialStock(items);
   ok(res, { items, total, page, pages: Math.ceil(total / limit) });
 });
 
 exports.rawMaterialStats = asyncHandler(async (req, res) => {
+  await postMissingCompletedGrns();
   const rows = await RawMaterialStock.find();
+  await repairZeroValueRawMaterialStock(rows);
   ok(res, {
     totalItems: rows.length,
     availableQuantity: rows.reduce((sum, row) => sum + row.availableQuantity, 0),
@@ -104,7 +145,7 @@ exports.listFinishedGoods = asyncHandler(async (req, res) => {
   if (status && status !== 'All Status') filter.status = status;
   if (warehouse) filter.warehouse = warehouse;
   const [items, total] = await Promise.all([
-    FinishedGoodsStock.find(filter).populate('warehouse location').sort('-updatedAt').skip(skip).limit(limit),
+    FinishedGoodsStock.find(filter).populate('warehouse location').sort('-createdAt').skip(skip).limit(limit),
     FinishedGoodsStock.countDocuments(filter)
   ]);
   ok(res, { items, total, page, pages: Math.ceil(total / limit) });

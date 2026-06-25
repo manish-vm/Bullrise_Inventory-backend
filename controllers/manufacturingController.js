@@ -145,7 +145,7 @@ function trendByDate(rows, dateKey, qtyKey) {
 }
 
 exports.getOverview = asyncHandler(async (req, res) => {
-  const rows = await WorkOrder.find().sort({ dueDate: -1 });
+  const rows = await WorkOrder.find().sort({ createdAt: -1 });
   const planned = rows.reduce((sum, row) => sum + row.plannedQty, 0);
   const completed = rows.reduce((sum, row) => sum + row.completedQty, 0);
   const produced = rows.reduce((sum, row) => sum + row.producedQty, 0);
@@ -237,7 +237,7 @@ exports.deleteWorkOrder = asyncHandler(async (req, res) => {
 });
 
 exports.getQCInspection = asyncHandler(async (req, res) => {
-  const rows = await QCInspection.find().sort({ inspectionDate: -1 });
+  const rows = await QCInspection.find().sort({ createdAt: -1 });
   const total = rows.length;
   const statusCount = (status) => rows.filter((row) => row.status === status).length;
   const defects = Object.values(rows.reduce((acc, row) => {
@@ -400,7 +400,7 @@ exports.importProductionTracking = asyncHandler(async (req, res) => {
 });
 
 exports.getProductionPlanning = asyncHandler(async (req, res) => {
-  const rows = await ProductionPlan.find().sort({ startDate: -1 });
+  const rows = await ProductionPlan.find().sort({ createdAt: -1 });
   const planned = rows.reduce((sum, row) => sum + row.plannedQty, 0);
   const completed = rows.reduce((sum, row) => sum + row.completedQty, 0);
   const produced = rows.reduce((sum, row) => sum + row.producedQty, 0);
@@ -432,7 +432,7 @@ exports.getProductionPlanning = asyncHandler(async (req, res) => {
 });
 
 exports.getJobCards = asyncHandler(async (req, res) => {
-  const rows = await JobCard.find().sort({ woNumber: -1, createdAt: 1 });
+  const rows = await JobCard.find().sort({ createdAt: -1 });
   const count = (status) => rows.filter((row) => row.status === status).length;
   const priorityCount = (priority) => rows.filter((row) => row.priority === priority).length;
   const departments = Object.values(rows.reduce((acc, row) => {

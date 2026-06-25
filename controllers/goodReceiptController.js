@@ -40,15 +40,35 @@ function receiptLinesFromBody(body, po) {
   }];
 }
 
-function applyReceiptToPurchaseOrder(po, receiptLines) {
+async function approvedReceiptTotals(poNumber, excludeReceiptId) {
+  if (!poNumber) return {};
+  const filter = {
+    poNumber,
+    approvedAt: { $exists: true, $ne: null }
+  };
+  if (excludeReceiptId) filter._id = { $ne: excludeReceiptId };
+
+  const receipts = await GoodReceipt.find(filter);
+  return receipts.flatMap((receipt) => receipt.items || []).reduce((totals, line) => {
+    const keys = [lineKey(line), String(line.materialName || '').toLowerCase()].filter(Boolean);
+    keys.forEach((key) => {
+      totals[key] ||= { accepted: 0, rejected: 0 };
+      totals[key].accepted += Number(line.acceptedQuantity || 0);
+      totals[key].rejected += Number(line.rejectedQuantity || 0);
+    });
+    return totals;
+  }, {});
+}
+
+async function syncPurchaseOrderFromReceipts(po) {
   if (!po) return;
+  const totals = await approvedReceiptTotals(po.poNumber);
   po.items = (po.items || []).map((item, index) => {
     const key = String(item.lineNo || index + 1).toLowerCase();
-    const matching = receiptLines.filter((line) => lineKey(line) === key || String(line.materialName || '').toLowerCase() === String(item.materialName || '').toLowerCase());
-    const accepted = matching.reduce((sum, line) => sum + Number(line.acceptedQuantity || 0), 0);
-    const rejected = matching.reduce((sum, line) => sum + Number(line.rejectedQuantity || 0), 0);
-    const receivedQuantity = Number(item.receivedQuantity || 0) + accepted;
-    const rejectedQuantity = Number(item.rejectedQuantity || 0) + rejected;
+    const materialKey = String(item.materialName || '').toLowerCase();
+    const lineTotals = totals[key] || totals[materialKey] || { accepted: 0, rejected: 0 };
+    const receivedQuantity = lineTotals.accepted;
+    const rejectedQuantity = lineTotals.rejected;
     const balanceQuantity = Math.max(Number(item.quantity || 0) - receivedQuantity - rejectedQuantity, 0);
     return {
       ...item.toObject?.() || item,
@@ -66,12 +86,16 @@ function applyReceiptToPurchaseOrder(po, receiptLines) {
   else po.status = 'Partially Received';
 }
 
-function assertReceiptWithinBalance(po, receiptLines) {
+async function assertReceiptWithinBalance(po, receiptLines, excludeReceiptId) {
   if (!po) return;
+  const totals = await approvedReceiptTotals(po.poNumber, excludeReceiptId);
   for (const line of receiptLines) {
     const poItem = po.items.find((item, index) => String(item.lineNo || index + 1) === String(line.poLineNo) || String(item.materialName || '').toLowerCase() === String(line.materialName || '').toLowerCase());
     if (!poItem) throw new Error(`PO line not found for ${line.materialName || line.poLineNo}`);
-    const balance = Number(poItem.quantity || 0) - Number(poItem.receivedQuantity || 0) - Number(poItem.rejectedQuantity || 0);
+    const key = String(poItem.lineNo || 1).toLowerCase();
+    const materialKey = String(poItem.materialName || '').toLowerCase();
+    const lineTotals = totals[key] || totals[materialKey] || { accepted: 0, rejected: 0 };
+    const balance = Number(poItem.quantity || 0) - lineTotals.accepted - lineTotals.rejected;
     const incoming = Number(line.acceptedQuantity || 0) + Number(line.rejectedQuantity || 0);
     if (incoming > balance) throw new Error(`Receipt quantity exceeds pending balance for ${poItem.materialName}`);
   }
@@ -97,7 +121,7 @@ exports.getGoodReceipts = asyncHandler(async (req, res) => {
   const perPage = Number(limit);
   const items = await GoodReceipt.find(filter)
     .populate('supplier')
-    .sort({ receiptDate: -1 })
+    .sort({ createdAt: -1 })
     .skip((page - 1) * perPage)
     .limit(perPage);
   const total = await GoodReceipt.countDocuments(filter);
@@ -109,7 +133,7 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
   const supplier = req.body.supplier ? await Supplier.findById(req.body.supplier) : null;
   const po = req.body.poNumber ? await PurchaseOrder.findOne({ poNumber: req.body.poNumber }) : null;
   const receiptItems = receiptLinesFromBody(req.body, po);
-  assertReceiptWithinBalance(po, receiptItems);
+  await assertReceiptWithinBalance(po, receiptItems);
 
   const quantity = receiptItems.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
   const receiptValue = receiptItems.reduce((sum, item) => sum + Number(item.totalValue || (Number(item.acceptedQuantity || 0) * Number(item.unitCost || 0))), 0);
@@ -133,7 +157,7 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
   }
 
   if (po && receipt.status === 'Completed') {
-    applyReceiptToPurchaseOrder(po, receiptItems);
+    await syncPurchaseOrderFromReceipts(po);
     await po.save();
   }
 
@@ -149,7 +173,21 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
 });
 
 exports.getGoodReceipt = asyncHandler(async (req, res) => ok(res, await GoodReceipt.findById(req.params.id).populate('supplier')));
-exports.updateGoodReceipt = asyncHandler(async (req, res) => ok(res, await GoodReceipt.findByIdAndUpdate(req.params.id, req.body, { new: true })));
+exports.updateGoodReceipt = asyncHandler(async (req, res) => {
+  const receipt = await GoodReceipt.findById(req.params.id);
+  if (!receipt) throw new Error('GRN not found');
+  Object.assign(receipt, req.body);
+
+  if (receipt.status === 'Completed' && !receipt.stockPosted) {
+    await receiveRawMaterialFromGRN(receipt);
+    receipt.stockPosted = true;
+    receipt.approvedBy = req.user?.name || receipt.approvedBy || 'System';
+    receipt.approvedAt = receipt.approvedAt || new Date();
+  }
+
+  await receipt.save();
+  ok(res, receipt);
+});
 exports.deleteGoodReceipt = asyncHandler(async (req, res) => { await GoodReceipt.findByIdAndDelete(req.params.id); ok(res, null, 'Deleted'); });
 
 exports.approveGoodReceipt = asyncHandler(async (req, res) => {
@@ -178,10 +216,13 @@ exports.approveGoodReceipt = asyncHandler(async (req, res) => {
     };
   });
 
-  assertReceiptWithinBalance(po, approvedItems);
+  await assertReceiptWithinBalance(po, approvedItems, receipt._id);
 
   const acceptedTotal = approvedItems.reduce((sum, line) => sum + Number(line.acceptedQuantity || 0), 0);
   const rejectedTotal = approvedItems.reduce((sum, line) => sum + Number(line.rejectedQuantity || 0), 0);
+  if (acceptedTotal + rejectedTotal <= 0) {
+    throw new Error('Enter accepted or rejected quantity before approving GRN');
+  }
 
   receipt.items = approvedItems;
   receipt.itemsCount = approvedItems.length;
@@ -200,7 +241,7 @@ exports.approveGoodReceipt = asyncHandler(async (req, res) => {
   await receipt.save();
 
   if (po) {
-    applyReceiptToPurchaseOrder(po, approvedItems);
+    await syncPurchaseOrderFromReceipts(po);
     await po.save();
   }
 

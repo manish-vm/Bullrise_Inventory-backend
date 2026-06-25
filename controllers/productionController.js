@@ -8,7 +8,7 @@ const pct = (part, total) => total ? Number(((part / total) * 100).toFixed(1)) :
 const dateText = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 
 exports.getProduction = asyncHandler(async (req, res) => {
-  const rows = await Production.find().sort({ productionDate: -1, productionId: -1 });
+  const rows = await Production.find().sort({ createdAt: -1 });
   const target = rows.reduce((sum, row) => sum + row.targetQty, 0);
   const totalProduced = rows.reduce((sum, row) => sum + row.producedQty, 0);
   const totalRejected = rows.reduce((sum, row) => sum + row.rejectedQty, 0);
