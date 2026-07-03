@@ -5,6 +5,8 @@ const StockMovement = require('../models/StockMovement');
 const FinishedGoodsStock = require('../models/FinishedGoodsStock');
 const SKU = require('../models/SKU');
 const BarcodeLabel = require('../models/BarcodeLabel');
+const ProductCategory = require('../models/ProductCategory');
+const MaterialCategory = require('../models/MaterialCategory');
 
 const statusFor = (available, reorderLevel) => {
   if (available <= 0) return 'Out of Stock';
@@ -92,6 +94,13 @@ async function receiveRawMaterialFromGRN(receipt) {
     stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
     await stock.save();
 
+    const materialItem = await MaterialCategory.findOne({ name: { $in: [materialName, category].filter(Boolean) } });
+    if (materialItem) {
+      materialItem.totalMaterials = stock.availableQuantity;
+      materialItem.unit = stock.unit || line.unit || receipt.unit || materialItem.unit;
+      await materialItem.save();
+    }
+
     await MaterialBatch.findOneAndUpdate(
       { batchNo },
       {
@@ -137,15 +146,36 @@ async function receiveRawMaterialFromGRN(receipt) {
 }
 
 async function reserveRawMaterial({ materialName, category, quantity, referenceType, referenceId, remarks }) {
-  const stock = await RawMaterialStock.findOne({ materialName, category }).sort({ availableQuantity: -1 });
+  const conditions = [];
+  if (materialName && category) conditions.push({ materialName, category });
+  if (materialName) conditions.push({ materialName });
+  if (category) conditions.push({ category });
+
+  const stock = await RawMaterialStock.findOne(conditions.length ? { $or: conditions } : {}).sort({ availableQuantity: -1 });
   if (!stock || stock.availableQuantity < quantity) {
-    throw new Error(`Insufficient raw material stock for ${materialName}`);
+    const available = Number(stock?.availableQuantity || 0);
+    const label = materialName || category || 'raw material';
+    throw new Error(`Insufficient raw material stock for ${label}. Required ${quantity}, available ${available}.`);
   }
 
   stock.availableQuantity -= quantity;
   stock.reservedQuantity += quantity;
   stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
   await stock.save();
+
+  const names = [materialName, category].filter(Boolean);
+  const materialItem = await MaterialCategory.findOne({ name: { $in: names } });
+  if (materialItem) {
+    materialItem.totalMaterials = stock.availableQuantity;
+    materialItem.unit = stock.unit || materialItem.unit;
+    await materialItem.save();
+  } else {
+    const categoryRow = await ProductCategory.findOne({ name: { $in: names } });
+    if (categoryRow) {
+      categoryRow.products = stock.availableQuantity;
+      await categoryRow.save();
+    }
+  }
 
   await createMovement({
     movementType: 'MATERIAL_RESERVED',
@@ -164,7 +194,7 @@ async function reserveRawMaterial({ materialName, category, quantity, referenceT
   return stock;
 }
 
-async function postFinishedGoods({ product, variant, productName, sku, barcode, size, color, quantity, warehouse, referenceType, referenceId, remarks }) {
+async function postFinishedGoods({ product, variant, productName, sku, barcode, size, color, quantity, warehouse, unitCost = 0, sellingPrice = 0, referenceType, referenceId, remarks }) {
   const defaultWh = warehouse ? null : await defaultWarehouse();
   const warehouseId = warehouse || defaultWh?._id;
 
@@ -174,12 +204,16 @@ async function postFinishedGoods({ product, variant, productName, sku, barcode, 
     { new: true, upsert: true }
   );
 
+  const update = {
+    $setOnInsert: { product, variant, productName, sku, barcode: skuDoc.barcode, size, color, warehouse: warehouseId },
+    $inc: { availableQuantity: quantity, totalQuantity: quantity }
+  };
+  if (Number(unitCost || 0) > 0) update.$set = { ...(update.$set || {}), unitCost };
+  if (Number(sellingPrice || 0) > 0) update.$set = { ...(update.$set || {}), sellingPrice };
+
   const stock = await FinishedGoodsStock.findOneAndUpdate(
     { sku, warehouse: warehouseId },
-    {
-      $setOnInsert: { product, variant, productName, sku, barcode: skuDoc.barcode, size, color, warehouse: warehouseId },
-      $inc: { availableQuantity: quantity, totalQuantity: quantity }
-    },
+    update,
     { new: true, upsert: true }
   );
 
@@ -198,6 +232,8 @@ async function postFinishedGoods({ product, variant, productName, sku, barcode, 
     warehouseId,
     quantityIn: quantity,
     balanceAfter: stock.availableQuantity,
+    unitCost,
+    totalValue: quantity * Number(unitCost || 0),
     remarks
   });
 

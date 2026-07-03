@@ -6,7 +6,7 @@ const productVariantSchema = new mongoose.Schema({
   category: { type: String, required: true, trim: true },
   attributes: { type: String, required: true },
   sku: { type: String, required: true, unique: true, trim: true },
-  price: { type: Number, required: true },
+  price: { type: Number, default: 0 },
   stock: { type: Number, default: 0 },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
   createdOn: { type: Date, default: Date.now },

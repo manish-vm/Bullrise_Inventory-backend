@@ -9,7 +9,7 @@ const productAttributeSchema = new mongoose.Schema({
   usedInVariants: { type: Number, default: 0 },
   systemAttribute: { type: Boolean, default: false },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
-  createdOn: { type: Date, required: true },
+  createdOn: { type: Date, default: Date.now },
   color: { type: String, default: 'blue' }
 }, { timestamps: true });
 

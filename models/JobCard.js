@@ -21,6 +21,9 @@ const jobCardSchema = new mongoose.Schema({
   priority: { type: String, enum: ['High', 'Medium', 'Low', 'None'], default: 'None' },
   status: { type: String, enum: ['Completed', 'In Progress', 'Pending', 'Overdue'], default: 'Pending' },
   progress: { type: Number, default: 0 },
+  unitStageCost: { type: Number, default: 0 },
+  stageCost: { type: Number, default: 0 },
+  postedToStock: { type: Boolean, default: false },
   trendDate: Date
 }, { timestamps: true });
 

@@ -5,7 +5,7 @@ const productSchema = new mongoose.Schema({
   sku: { type: String, required: true, unique: true, trim: true },
   collectionName: { type: String, required: true, trim: true },
   category: { type: String, required: true, trim: true },
-  department: { type: String, required: true, trim: true },
+  department: { type: String, trim: true },
   baseUnit: { type: String, default: 'Pcs' },
   productCount: { type: Number, default: 1 },
   variants: { type: Number, default: 0 },

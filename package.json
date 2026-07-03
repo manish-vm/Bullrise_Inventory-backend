@@ -2,7 +2,8 @@
     "scripts": {
         "dev": "nodemon server.js",
         "start": "node server.js",
-        "seed": "node seed/seed.js"
+        "seed": "node seed/seed.js",
+        "clear:ops": "node seed/clearOperationalData.js"
     },
     "dependencies": {
         "cors": "latest",

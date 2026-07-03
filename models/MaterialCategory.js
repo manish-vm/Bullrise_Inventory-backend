@@ -5,6 +5,7 @@ const materialCategorySchema = new mongoose.Schema({
   description: { type: String, required: true },
   totalMaterials: { type: Number, default: 0 },
   lowStockItems: { type: Number, default: 0 },
+  unit: { type: String, enum: ['m', 'pcs'], default: 'm' },
   icon: { type: String, default: 'box' },
   color: { type: String, default: 'orange' },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' }

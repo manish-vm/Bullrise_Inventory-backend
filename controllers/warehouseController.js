@@ -1,14 +1,32 @@
 const asyncHandler = require('express-async-handler');
 const Warehouse = require('../models/Warehouse');
 const Activity = require('../models/Activity');
+const StockMovement = require('../models/StockMovement');
 const { ok, created } = require('../utils/apiResponse');
 
 const pct = (used, total) => total ? Math.round((used / total) * 1000) / 10 : 0;
+const colorPalette = ['#2f80ed', '#16c784', '#ff9800', '#9c27ff', '#22b8c7', '#ef4444', '#8b5cf6', '#0f766e'];
+
+async function nextWarehouseColor() {
+  const rows = await Warehouse.find().select('color');
+  const used = new Set(rows.map((row) => row.color).filter(Boolean));
+  return colorPalette.find((color) => !used.has(color)) || colorPalette[rows.length % colorPalette.length];
+}
 
 exports.getWarehouseOverview = asyncHandler(async (req, res) => {
-  const rows = await Warehouse.find().sort({ code: 1 });
-  const activities = await Activity.find({ module: 'warehouse-overview' }).sort({ createdAt: -1 }).limit(5);
+  const [rows, activities, movements] = await Promise.all([
+    Warehouse.find().sort({ code: 1 }),
+    Activity.find({ module: 'warehouse-overview' }).sort({ createdAt: -1 }).limit(5),
+    StockMovement.find().sort({ createdAt: -1 }).limit(200)
+  ]);
   const totalStock = rows.reduce((sum, row) => sum + row.stockUnits, 0);
+  const movementByDay = movements.reduce((map, movement) => {
+    const label = new Date(movement.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+    if (!map[label]) map[label] = { day: label, stockIn: 0, stockOut: 0 };
+    map[label].stockIn += Number(movement.quantityIn || 0);
+    map[label].stockOut += Number(movement.quantityOut || 0);
+    return map;
+  }, {});
 
   ok(res, {
     stats: {
@@ -24,21 +42,11 @@ exports.getWarehouseOverview = asyncHandler(async (req, res) => {
       value: row.stockUnits,
       percent: totalStock ? Math.round((row.stockUnits / totalStock) * 1000) / 10 : 0
     })),
-    stockMovement: [
-      { day: '16 May', stockIn: 1650, stockOut: 820 },
-      { day: '17 May', stockIn: 3420, stockOut: 1340 },
-      { day: '18 May', stockIn: 5580, stockOut: 2860 },
-      { day: '19 May', stockIn: 3540, stockOut: 1580 },
-      { day: '20 May', stockIn: 3280, stockOut: 1440 },
-      { day: '21 May', stockIn: 4250, stockOut: 2620 },
-      { day: '22 May', stockIn: 4380, stockOut: 1680 }
-    ],
+    stockMovement: Object.values(movementByDay).reverse().slice(-7),
     utilization: rows.map((row) => ({ code: row.code, value: pct(row.usedCapacity, row.totalCapacity), color: row.color })),
-    alerts: [
-      { product: "Men's Polo - Size XL", warehouse: 'WH-003', quantity: 45 },
-      { product: "Women's Top - Size S", warehouse: 'WH-001', quantity: 32 },
-      { product: 'Kids T-Shirt - Size M', warehouse: 'WH-004', quantity: 28 }
-    ],
+    alerts: rows
+      .filter((row) => row.totalCapacity && row.usedCapacity / row.totalCapacity > 0.9)
+      .map((row) => ({ product: row.name, warehouse: row.code, quantity: row.usedCapacity })),
     activities
   });
 });
@@ -58,7 +66,7 @@ exports.getWarehouses = asyncHandler(async (req, res) => {
   ok(res, { items, total, page: Number(page), pages: Math.ceil(total / perPage) });
 });
 
-exports.createWarehouse = asyncHandler(async (req, res) => created(res, await Warehouse.create(req.body)));
+exports.createWarehouse = asyncHandler(async (req, res) => created(res, await Warehouse.create({ ...req.body, color: await nextWarehouseColor() })));
 
 exports.getWarehouse = asyncHandler(async (req, res) => {
   const warehouse = await Warehouse.findById(req.params.id);

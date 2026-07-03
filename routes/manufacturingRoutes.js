@@ -8,6 +8,7 @@ router.post('/work-orders', validateCreate(v.workOrder), c.createWorkOrder);
 router.route('/work-orders/:id').get(c.getWorkOrder).put(validateUpdate(v.workOrder), c.updateWorkOrder).delete(c.deleteWorkOrder);
 router.get('/production-planning', c.getProductionPlanning);
 router.get('/job-cards', c.getJobCards);
+router.get('/stages/:stage', c.getStageManagement);
 router.get('/damage/stats', c.getProductionDamageStats);
 router.get('/damage', c.getProductionDamage);
 router.get('/qc-inspection', c.getQCInspection);

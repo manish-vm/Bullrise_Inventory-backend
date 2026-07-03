@@ -53,8 +53,16 @@ exports.updateSupplier = asyncHandler(async (req, res) => ok(res, await Supplier
 exports.deleteSupplier = asyncHandler(async (req, res) => { await Supplier.findByIdAndDelete(req.params.id); ok(res, null, 'Deleted'); });
 
 exports.getSupplierStats = asyncHandler(async (req, res) => {
-  const [total, active, inactive, suppliers, orderCounts] = await Promise.all([
-    Supplier.countDocuments(), Supplier.countDocuments({ status: 'Active' }), Supplier.countDocuments({ status: 'Inactive' }), Supplier.find(), getOrderCounts()
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const [total, active, inactive, suppliers, orderCounts, thisMonthOrders] = await Promise.all([
+    Supplier.countDocuments(),
+    Supplier.countDocuments({ status: 'Active' }),
+    Supplier.countDocuments({ status: 'Inactive' }),
+    Supplier.find(),
+    getOrderCounts(),
+    PurchaseOrder.countDocuments({ createdAt: { $gte: monthStart } })
   ]);
   const rows = suppliers.map((supplier) => withOrderCount(supplier, orderCounts));
   const byCategory = Object.values(rows.reduce((acc, s) => {
@@ -63,7 +71,7 @@ exports.getSupplierStats = asyncHandler(async (req, res) => {
     return acc;
   }, {}));
   const top = rows.sort((a, b) => b.ordersCount - a.ordersCount).slice(0, 5).map(s => ({ name: s.name, value: `${s.ordersCount} Orders` }));
-  ok(res, { total, active, inactive, thisMonthOrders: 18, byCategory, top });
+  ok(res, { total, active, inactive, thisMonthOrders, byCategory, top });
 });
 
 exports.getSupplierActivities = asyncHandler(async (req, res) => ok(res, await Activity.find({ module: 'suppliers' }).sort({ createdAt: -1 }).limit(5)));

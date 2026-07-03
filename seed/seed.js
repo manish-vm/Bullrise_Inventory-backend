@@ -18,6 +18,18 @@ const ProductCategory = require('../models/ProductCategory');
 const ProductVariant = require('../models/ProductVariant');
 const ProductAttribute = require('../models/ProductAttribute');
 const Warehouse = require('../models/Warehouse');
+const WarehouseLocation = require('../models/WarehouseLocation');
+const RawMaterialStock = require('../models/RawMaterialStock');
+const MaterialBatch = require('../models/MaterialBatch');
+const StockMovement = require('../models/StockMovement');
+const FinishedGoodsStock = require('../models/FinishedGoodsStock');
+const SKU = require('../models/SKU');
+const BarcodeLabel = require('../models/BarcodeLabel');
+const SalesOrder = require('../models/SalesOrder');
+const CustomerReturn = require('../models/CustomerReturn');
+const User = require('../models/User');
+const BillOfMaterial = require('../models/BillOfMaterial');
+const ProductionDamage = require('../models/ProductionDamage');
 
 const suppliers = [
  ['SUP-001','ABC Textiles Ltd.','AT','Arvind Kumar','Manager','Fabrics','+91 98765 43210','arvind@abctextiles.com','Active',18],
@@ -105,20 +117,87 @@ const warehouses = [
 
 async function seed(){
  await connectDB();
- await Promise.all([Supplier.deleteMany(), MaterialCategory.deleteMany(), PurchaseOrder.deleteMany(), GoodReceipt.deleteMany(), StockReturn.deleteMany(), WorkOrder.deleteMany(), QCInspection.deleteMany(), ProductionTracking.deleteMany(), ProductionPlan.deleteMany(), JobCard.deleteMany(), Production.deleteMany(), Product.deleteMany(), ProductCategory.deleteMany(), ProductVariant.deleteMany(), ProductAttribute.deleteMany(), Warehouse.deleteMany(), Activity.deleteMany()]);
+ await Promise.all([Supplier.deleteMany(), MaterialCategory.deleteMany(), PurchaseOrder.deleteMany(), GoodReceipt.deleteMany(), StockReturn.deleteMany(), WorkOrder.deleteMany(), QCInspection.deleteMany(), ProductionTracking.deleteMany(), ProductionPlan.deleteMany(), JobCard.deleteMany(), ProductionDamage.deleteMany(), Production.deleteMany(), Product.deleteMany(), ProductCategory.deleteMany(), ProductVariant.deleteMany(), ProductAttribute.deleteMany(), Warehouse.deleteMany(), WarehouseLocation.deleteMany(), RawMaterialStock.deleteMany(), MaterialBatch.deleteMany(), StockMovement.deleteMany(), FinishedGoodsStock.deleteMany(), SKU.deleteMany(), BarcodeLabel.deleteMany(), SalesOrder.deleteMany(), CustomerReturn.deleteMany(), BillOfMaterial.deleteMany(), User.deleteMany(), Activity.deleteMany()]);
+ await Promise.all([
+   User.createWithPassword({ name: 'Super Administrator', email: 'superadmin@bullriseclothing.com', phone: '+91 90000 00001', role: 'Super Admin' }, 'Bullrise@123'),
+   User.createWithPassword({ name: 'Admin User', email: 'admin@bullriseclothing.com', phone: '+91 90000 00002', role: 'Admin' }, 'Bullrise@123'),
+   User.createWithPassword({ name: 'Warehouse Manager', email: 'warehouse@bullriseclothing.com', phone: '+91 90000 00003', role: 'Warehouse Manager' }, 'Bullrise@123'),
+   User.createWithPassword({ name: 'Production Manager', email: 'production@bullriseclothing.com', phone: '+91 90000 00004', role: 'Production Manager' }, 'Bullrise@123'),
+   User.createWithPassword({ name: 'QC Inspector', email: 'qc@bullriseclothing.com', phone: '+91 90000 00005', role: 'QC Inspector' }, 'Bullrise@123'),
+   User.createWithPassword({ name: 'Sales Staff', email: 'sales@bullriseclothing.com', phone: '+91 90000 00006', role: 'Sales Staff' }, 'Bullrise@123')
+ ]);
  const createdSuppliers = await Supplier.insertMany(suppliers);
  await MaterialCategory.insertMany(cats);
  await Product.insertMany(products);
  await ProductCategory.insertMany(productCategories);
  await ProductVariant.insertMany(productVariants);
  await ProductAttribute.insertMany(productAttributes);
- await Warehouse.insertMany(warehouses);
+ const bomProducts = await Product.find().limit(4);
+ await BillOfMaterial.insertMany(bomProducts.map((product, index) => {
+   const baseQuantity = 100;
+   const materials = [
+     { lineNo: 1, materialName: 'Fabrics', category: 'Fabrics', unit: 'm', quantityPerUnit: product.category === 'Hoodies' ? 1.8 : 1.2, wastagePercent: 5, unitCost: 90, requiredForQty: baseQuantity },
+     { lineNo: 2, materialName: 'Threads', category: 'Threads', unit: 'm', quantityPerUnit: 12, wastagePercent: 2, unitCost: 1.2, requiredForQty: baseQuantity },
+     { lineNo: 3, materialName: 'Labels & Tags', category: 'Labels & Tags', unit: 'pcs', quantityPerUnit: 2, wastagePercent: 1, unitCost: 2.5, requiredForQty: baseQuantity },
+     { lineNo: 4, materialName: 'Packaging', category: 'Packaging', unit: 'pcs', quantityPerUnit: 1, wastagePercent: 1, unitCost: 4, requiredForQty: baseQuantity }
+   ].map((line) => {
+     const totalRequired = line.quantityPerUnit * line.requiredForQty * (1 + line.wastagePercent / 100);
+     return { ...line, totalRequired, totalCost: totalRequired * line.unitCost };
+   });
+   return {
+     bomNo: `BOM-2025-${String(index + 1).padStart(4, '0')}`,
+     product: product._id,
+     productName: product.name,
+     productSku: product.sku,
+     styleCode: product.sku,
+     category: product.category,
+     department: product.department,
+     baseQuantity,
+     materials,
+     materialCost: materials.reduce((sum, line) => sum + line.quantityPerUnit * baseQuantity * line.unitCost, 0),
+     totalCost: materials.reduce((sum, line) => sum + line.totalCost, 0),
+     wastageCost: materials.reduce((sum, line) => sum + line.totalCost, 0) - materials.reduce((sum, line) => sum + line.quantityPerUnit * baseQuantity * line.unitCost, 0),
+     version: 1,
+     status: index === 0 ? 'Draft' : 'Active',
+     approvedBy: index === 0 ? undefined : 'Production Manager',
+     approvedAt: index === 0 ? undefined : new Date()
+   };
+ }));
+ const createdWarehouses = await Warehouse.insertMany(warehouses);
+ const locations = await WarehouseLocation.insertMany(createdWarehouses.flatMap((warehouse, index) => ([
+   { warehouse: warehouse._id, warehouseCode: warehouse.code, name: `${warehouse.code} Receiving Bay`, code: `RCV-${index + 1}`, type: 'Receiving', capacity: 2500, usedCapacity: 850, status: 'Active' },
+   { warehouse: warehouse._id, warehouseCode: warehouse.code, name: `${warehouse.code} Rack A`, code: `R-A-${index + 1}`, type: 'Rack', capacity: 4000, usedCapacity: 2100, status: 'Active' }
+ ])));
  const dates = ['2025-05-22','2025-05-21','2025-05-20','2025-05-19','2025-05-18','2025-05-17','2025-05-16','2025-05-15'];
  const amounts = [125000,85600,42300,67850,33450,28900,19750,14250];
  const statuses = ['Open','Partially Received','Open','Completed','Completed','Cancelled','Open','Partially Received'];
  for(let i=0;i<8;i++){
    const s = createdSuppliers[i];
-   await PurchaseOrder.create({poNumber:`PO-2025-${1024-i}`, supplier:s._id, supplierName:s.name, category:s.category, orderDate:new Date(dates[i]), expectedDate:new Date(Date.parse(dates[i])+6*86400000), totalAmount:amounts[i], status:statuses[i], items:[{materialName:s.category, category:s.category, quantity:100, unitPrice:amounts[i]/100, amount:amounts[i]}]});
+   await PurchaseOrder.create({
+     poNumber:`PO-2025-${1024-i}`,
+     supplier:s._id,
+     supplierName:s.name,
+     category:s.category,
+     orderDate:new Date(dates[i]),
+     expectedDate:new Date(Date.parse(dates[i])+6*86400000),
+     totalAmount:amounts[i],
+     orderedQuantity:100,
+     receivedQuantity: statuses[i] === 'Completed' ? 100 : statuses[i] === 'Partially Received' ? 50 : 0,
+     status:statuses[i],
+     items:[{
+       lineNo:1,
+       materialName:s.category,
+       category:s.category,
+       quantity:100,
+       unit:'m',
+       unitPrice:amounts[i]/100,
+       amount:amounts[i],
+       receivedQuantity: statuses[i] === 'Completed' ? 100 : statuses[i] === 'Partially Received' ? 50 : 0,
+       rejectedQuantity:0,
+       balanceQuantity: statuses[i] === 'Completed' ? 0 : statuses[i] === 'Partially Received' ? 50 : 100,
+       status: statuses[i] === 'Completed' ? 'Completed' : statuses[i] === 'Partially Received' ? 'Partially Received' : 'Open'
+     }]
+   });
  }
  const goodReceipts = [
   ['GRN-2025-0086','PO-2025-1024',0,'2025-05-22',5,1250,'m','Ramesh Kumar',225000,'Completed'],
@@ -131,9 +210,86 @@ async function seed(){
   ['GRN-2025-0079','PO-2025-1017',7,'2025-05-15',4,690,'m','Nitin Verma',89500,'Completed']
  ].map(r => {
    const s = createdSuppliers[r[2]];
-   return {grnNumber:r[0], poNumber:r[1], supplier:s._id, supplierName:s.name, category:s.category, receiptDate:new Date(r[3]), itemsCount:r[4], quantity:r[5], unit:r[6], receivedBy:r[7], receiptValue:r[8], status:r[9]};
+   return {
+     grnNumber:r[0],
+     poNumber:r[1],
+     supplier:s._id,
+     supplierName:s.name,
+     category:s.category,
+     receiptDate:new Date(r[3]),
+     itemsCount:r[4],
+     quantity:r[5],
+     unit:r[6],
+     receivedBy:r[7],
+     receiptValue:r[8],
+     status:r[9],
+     items:[{
+       poLineNo:1,
+       materialName:s.category,
+       category:s.category,
+       orderedQuantity:100,
+       receivedQuantity:r[5],
+       acceptedQuantity:r[9] === 'Rejected' ? 0 : r[5],
+       rejectedQuantity:r[9] === 'Rejected' ? r[5] : 0,
+       unit:r[6],
+       unitCost:r[8]/r[5],
+       totalValue:r[8],
+       batchNo:`${r[0]}-B1`
+     }]
+   };
  });
  await GoodReceipt.insertMany(goodReceipts);
+ for (const receipt of goodReceipts.filter((item) => item.status === 'Completed')) {
+   const acceptedQuantity = receipt.quantity;
+   const unitCost = receipt.receiptValue / receipt.quantity;
+   const warehouse = createdWarehouses[1] || createdWarehouses[0];
+   const location = locations.find((item) => String(item.warehouse) === String(warehouse._id));
+   const stock = await RawMaterialStock.create({
+     materialName: receipt.category,
+     category: receipt.category,
+     supplier: receipt.supplier,
+     supplierName: receipt.supplierName,
+     warehouse: warehouse._id,
+     location: location?._id,
+     unit: receipt.unit,
+     availableQuantity: acceptedQuantity,
+     unitCost,
+     totalValue: receipt.receiptValue,
+     reorderLevel: 200,
+     status: acceptedQuantity <= 200 ? 'Low Stock' : 'In Stock'
+   });
+   await MaterialBatch.create({
+     batchNo: `${receipt.grnNumber}-B1`,
+     materialName: receipt.category,
+     category: receipt.category,
+     supplier: receipt.supplier,
+     supplierName: receipt.supplierName,
+     warehouse: warehouse._id,
+     location: location?._id,
+     poNumber: receipt.poNumber,
+     quantityReceived: receipt.quantity,
+     acceptedQuantity,
+     availableQuantity: acceptedQuantity,
+     unit: receipt.unit,
+     unitCost,
+     totalValue: receipt.receiptValue
+   });
+   await StockMovement.create({
+     movementType: 'GRN_RECEIVED',
+     itemType: 'RAW_MATERIAL',
+     referenceType: 'GoodReceipt',
+     referenceId: receipt.grnNumber,
+     materialId: receipt.category,
+     warehouseId: warehouse._id,
+     locationId: location?._id,
+     batchNo: `${receipt.grnNumber}-B1`,
+     quantityIn: acceptedQuantity,
+     balanceAfter: stock.availableQuantity,
+     unitCost,
+     totalValue: receipt.receiptValue,
+     remarks: `${receipt.grnNumber} seeded receipt`
+   });
+ }
  const workOrders = [
   ['WO-2025-0128',"Men's T-Shirt",'Cutting',1000,600,'In Progress','2025-05-25',600,18,2.1,'2025-05-22'],
   ['WO-2025-0127','Hoodie','Stitching',800,800,'Completed','2025-05-20',800,12,2.0,'2025-05-20'],
@@ -207,6 +363,144 @@ async function seed(){
   ['JC-2025-049','WO-2025-0121',"Kids T-Shirt",'Stitching','Olivia Martin','2025-05-26','2025-05-28','Low','Pending',0,'2025-05-18']
  ].map(j => ({jobCardNumber:j[0], woNumber:j[1], productStyle:j[2], department:j[3], assignedTo:j[4], startDate:new Date(j[5]), dueDate:new Date(j[6]), priority:j[7], status:j[8], progress:j[9], trendDate:new Date(j[10])}));
  await JobCard.insertMany(jobCards);
+ const createdVariants = await ProductVariant.find().limit(6);
+ for (const variant of createdVariants) {
+   const product = await Product.findOne({ name: variant.product });
+   const color = variant.color === 'denim' ? 'BLU' : String(variant.color || 'MIX').slice(0, 3).toUpperCase();
+   const size = (variant.attributes.match(/Size: ([A-Z]+)/)?.[1] || 'M');
+   const productCode = String(variant.sku || variant.product).split('-')[0].slice(0, 3).toUpperCase();
+   const sku = `BR-${productCode}-${color}-${size}`;
+   const warehouse = createdWarehouses[2] || createdWarehouses[0];
+   const location = locations.find((item) => String(item.warehouse) === String(warehouse._id));
+   await SKU.create({ product: product?._id, variant: variant._id, sku, barcode: sku.replaceAll('-', ''), productName: variant.product, size, color, status: 'Active' });
+   await FinishedGoodsStock.create({
+     product: product?._id,
+     variant: variant._id,
+     productName: variant.product,
+     sku,
+     barcode: sku.replaceAll('-', ''),
+     size,
+     color,
+     warehouse: warehouse._id,
+     location: location?._id,
+     availableQuantity: variant.stock,
+     totalQuantity: variant.stock,
+     sellingPrice: variant.price,
+     reorderLevel: 50,
+     status: variant.stock <= 50 ? 'Low Stock' : 'In Stock'
+   });
+   await BarcodeLabel.create({ sku, barcode: sku.replaceAll('-', ''), productName: variant.product, quantity: variant.stock, referenceType: 'Seed', referenceId: variant.variantId });
+   await StockMovement.create({
+     movementType: 'FINISHED_GOODS_IN',
+     itemType: 'FINISHED_GOOD',
+     referenceType: 'QCInspection',
+     referenceId: 'SEED-QC',
+     productId: product?._id,
+     variantId: variant._id,
+     sku,
+     warehouseId: warehouse._id,
+     locationId: location?._id,
+     quantityIn: variant.stock,
+     balanceAfter: variant.stock,
+     totalValue: variant.stock * variant.price,
+     remarks: 'Seeded finished goods after QC pass'
+   });
+ }
+ const finishedStockRows = await FinishedGoodsStock.find().limit(6);
+ const salesSeed = [
+   ['SO-2025-0001', 'Retail Customer', '+91 90000 10001', 'POS', 0, 2, 'Delivered'],
+   ['SO-2025-0002', 'Online Buyer A', '+91 90000 10002', 'ONLINE', 1, 3, 'Shipped'],
+   ['SO-2025-0003', 'Retail Customer B', '+91 90000 10003', 'POS', 2, 1, 'Confirmed'],
+   ['SO-2025-0004', 'Online Buyer C', '+91 90000 10004', 'ONLINE', 3, 4, 'Packed'],
+   ['SO-2025-0005', 'Counter Sale D', '+91 90000 10005', 'POS', 4, 1, 'Pending'],
+   ['SO-2025-0006', 'Cancelled Buyer', '+91 90000 10006', 'ONLINE', 5, 2, 'Cancelled']
+ ];
+ const createdSales = [];
+ for (const saleRow of salesSeed) {
+   const stock = finishedStockRows[saleRow[4] % finishedStockRows.length];
+   if (!stock) continue;
+   const quantity = saleRow[5];
+   const price = Number(stock.sellingPrice || 0);
+   const lineTotal = quantity * price;
+   const sale = await SalesOrder.create({
+     orderNo: saleRow[0],
+     customerName: saleRow[1],
+     customerPhone: saleRow[2],
+     source: saleRow[3],
+     items: [{ sku: stock.sku, productName: stock.productName, quantity, price, total: lineTotal }],
+     subtotal: lineTotal,
+     total: lineTotal,
+     status: saleRow[6]
+   });
+   createdSales.push({ sale, stock, quantity, lineTotal });
+   if (['Confirmed', 'Packed', 'Shipped', 'Delivered'].includes(sale.status)) {
+     stock.availableQuantity = Math.max(stock.availableQuantity - quantity, 0);
+     if (['Confirmed', 'Packed'].includes(sale.status)) stock.reservedQuantity += quantity;
+     if (['Shipped', 'Delivered'].includes(sale.status)) stock.totalQuantity = Math.max(stock.totalQuantity - quantity, 0);
+     stock.status = stock.availableQuantity <= stock.reorderLevel ? 'Low Stock' : 'In Stock';
+     await stock.save();
+   }
+   if (['Shipped', 'Delivered'].includes(sale.status)) {
+     await StockMovement.create({
+       movementType: 'SALE',
+       itemType: 'FINISHED_GOOD',
+       referenceType: 'SalesOrder',
+       referenceId: String(sale._id),
+       sku: stock.sku,
+       warehouseId: stock.warehouse,
+       locationId: stock.location,
+       quantityOut: quantity,
+       balanceAfter: stock.availableQuantity,
+       totalValue: lineTotal,
+       remarks: `${sale.orderNo} seeded ${sale.status.toLowerCase()} sale`
+     });
+   }
+ }
+ const returnSeeds = [
+   ['CR-2025-0001', 0, 1, 'Size issue', 'Good', 'Restock', 'Pending QC'],
+   ['CR-2025-0002', 1, 1, 'Stitch opened after delivery', 'Repairable', 'Repair', 'Pending QC'],
+   ['CR-2025-0003', 0, 1, 'Packaging damage in transit', 'Damaged', 'Damage', 'Processed'],
+   ['CR-2025-0004', 1, 1, 'Customer rejected damaged item', 'Scrap', 'Scrap', 'Processed']
+ ];
+ for (const row of returnSeeds) {
+   const context = createdSales[row[1]];
+   if (!context) continue;
+   const item = await CustomerReturn.create({
+     returnNo: row[0],
+     order: context.sale._id,
+     orderNo: context.sale.orderNo,
+     sku: context.stock.sku,
+     quantity: row[2],
+     reason: row[3],
+     condition: row[4],
+     decision: row[5],
+     status: row[6],
+     remarks: row[6] === 'Processed' ? 'Seeded QC decision posted' : 'Awaiting QC inspection'
+   });
+   if (item.status === 'Processed') {
+     if (item.decision === 'Restock') {
+       context.stock.availableQuantity += item.quantity;
+       context.stock.returnedQuantity += item.quantity;
+     } else if (['Damage', 'Scrap'].includes(item.decision)) {
+       context.stock.damagedQuantity += item.quantity;
+     }
+     await context.stock.save();
+     await StockMovement.create({
+       movementType: item.decision === 'Restock' ? 'SALES_RETURN' : 'DAMAGE',
+       itemType: 'FINISHED_GOOD',
+       referenceType: 'CustomerReturn',
+       referenceId: String(item._id),
+       sku: item.sku,
+       warehouseId: context.stock.warehouse,
+       locationId: context.stock.location,
+       quantityIn: item.decision === 'Restock' ? item.quantity : 0,
+       quantityOut: ['Damage', 'Scrap'].includes(item.decision) ? item.quantity : 0,
+       balanceAfter: context.stock.availableQuantity,
+       totalValue: item.quantity * Number(context.stock.sellingPrice || 0),
+       remarks: `${item.returnNo} seeded ${item.decision} decision`
+     });
+   }
+ }
  const stockReturns = [
   ['RET-2025-0032','PO-2025-1024','',0,'2025-05-22',5,250,'m',45000,'Quality Issue','Approved'],
   ['RET-2025-0031','GRN-2025-0084','',2,'2025-05-20',3,120,'kg',12600,'Excess Stock','Approved'],

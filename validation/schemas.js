@@ -89,17 +89,17 @@ module.exports = {
     category: str(true), city: str(), phone: str(true), email: str(true), status: { type: 'string', enum: status.active }, ordersCount: num(false),
   },
   materialCategory: {
-    name: str(true), description: str(true), totalMaterials: num(false), lowStockItems: num(false), icon: str(), color: str(), status: { type: 'string', enum: status.active },
+    name: str(true), description: str(true), totalMaterials: num(false), lowStockItems: num(false), unit: str(), icon: str(), color: str(), status: { type: 'string', enum: status.active },
   },
   product: {
-    name: str(true), sku: str(true), collectionName: str(true), category: str(true), department: str(true),
+    name: str(true), sku: str(true), collectionName: str(true), category: str(true), department: str(),
     baseUnit: str(), productCount: num(false), variants: num(false), status: { type: 'string', enum: status.active }, createdOn: date, color: str(),
   },
   productCategory: {
     name: str(true), description: str(true), department: str(true), products: num(false), variants: num(false), status: { type: 'string', enum: status.active }, createdOn: date, color: str(),
   },
   productVariant: {
-    variantId: str(true), product: str(true), category: str(true), attributes: str(true), sku: str(true), price: num(true), stock: num(false), status: { type: 'string', enum: status.active }, createdOn: date, color: str(),
+    variantId: str(true), product: str(true), category: str(true), attributes: str(true), sku: str(true), price: num(false), stock: num(false), status: { type: 'string', enum: status.active }, createdOn: date, color: str(),
   },
   productAttribute: {
     name: str(true), type: str(true), inputType: str(true), values: str(), extraValues: num(false), usedInVariants: num(false), systemAttribute: { type: 'boolean' }, status: { type: 'string', enum: status.active }, createdOn: date, color: str(),

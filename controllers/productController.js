@@ -3,8 +3,15 @@ const Product = require('../models/Product');
 const ProductVariant = require('../models/ProductVariant');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
+const classPalette = ['blue', 'green', 'purple', 'orange', 'pink', 'teal', 'yellow', 'rose', 'grey', 'navy', 'denim'];
 
-const buildFilter = ({ search = '', category, department, status }) => {
+async function nextProductColor() {
+  const rows = await Product.find().select('color');
+  const used = new Set(rows.map((row) => row.color).filter(Boolean));
+  return classPalette.find((color) => !used.has(color)) || classPalette[rows.length % classPalette.length];
+}
+
+const buildFilter = ({ search = '', category, status }) => {
   const filter = {};
 
   if (search) {
@@ -16,7 +23,6 @@ const buildFilter = ({ search = '', category, department, status }) => {
   }
 
   if (category && category !== 'All Categories') filter.category = category;
-  if (department && department !== 'All Departments') filter.department = department;
   if (status && status !== 'All Status') filter.status = status;
 
   return filter;
@@ -57,9 +63,15 @@ exports.getProducts = asyncHandler(async (req, res) => {
   });
 });
 
-exports.createProduct = asyncHandler(async (req, res) => created(res, await Product.create(req.body)));
+exports.createProduct = asyncHandler(async (req, res) => {
+  const { department, ...body } = req.body;
+  created(res, await Product.create({ ...body, color: await nextProductColor() }));
+});
 exports.getProduct = asyncHandler(async (req, res) => ok(res, await Product.findById(req.params.id)));
-exports.updateProduct = asyncHandler(async (req, res) => ok(res, await Product.findByIdAndUpdate(req.params.id, req.body, { new: true })));
+exports.updateProduct = asyncHandler(async (req, res) => {
+  const { department, ...body } = req.body;
+  ok(res, await Product.findByIdAndUpdate(req.params.id, body, { new: true }));
+});
 exports.deleteProduct = asyncHandler(async (req, res) => {
   await Product.findByIdAndDelete(req.params.id);
   ok(res, null, 'Deleted');
@@ -71,17 +83,18 @@ exports.getProductStats = asyncHandler(async (req, res) => {
     getVariantCounts()
   ]);
   const rows = products.map((product) => withVariantCount(product, variantCounts));
-  const totalProducts = rows.reduce((sum, product) => sum + (product.productCount || 1), 0);
-  const activeProducts = rows.filter((product) => product.status === 'Active').reduce((sum, product) => sum + (product.productCount || 1), 0);
+  const productCount = (product) => Number(product.productCount || 0);
+  const totalProducts = rows.reduce((sum, product) => sum + productCount(product), 0);
+  const activeProducts = rows.filter((product) => product.status === 'Active').reduce((sum, product) => sum + productCount(product), 0);
   const inactiveProducts = totalProducts - activeProducts;
   const totalVariants = rows.reduce((sum, product) => sum + product.variants, 0);
-  const categories = [...new Set(rows.map((product) => product.category))];
+  const categories = [...new Set(rows.map((product) => product.category).filter(Boolean))];
   const categoryTotals = categories
     .map((category) => ({
       label: category,
       value: rows
         .filter((product) => product.category === category)
-        .reduce((sum, product) => sum + (product.productCount || 1), 0)
+        .reduce((sum, product) => sum + productCount(product), 0)
     }))
     .sort((a, b) => b.value - a.value);
 
@@ -89,7 +102,7 @@ exports.getProductStats = asyncHandler(async (req, res) => {
     totalProducts,
     activeProducts,
     inactiveProducts,
-    totalCategories: Math.max(categories.length, 18),
+    totalCategories: categories.length,
     totalVariants,
     categoryDistribution: categoryTotals,
     topProducts: rows

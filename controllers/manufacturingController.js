@@ -10,11 +10,46 @@ const { createMovement, postFinishedGoods, reserveRawMaterial } = require('../se
 const RawMaterialStock = require('../models/RawMaterialStock');
 const BillOfMaterial = require('../models/BillOfMaterial');
 const ProductionDamage = require('../models/ProductionDamage');
+const ProductVariant = require('../models/ProductVariant');
+const ProductCategory = require('../models/ProductCategory');
+const MaterialCategory = require('../models/MaterialCategory');
 
 const pct = (part, total) => total ? Number(((part / total) * 100).toFixed(1)) : 0;
 const dateText = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 const colors = ['#16a34a', '#2f80ed', '#8b5cf6', '#f97316', '#ef4444'];
 const productionStages = ['Cutting', 'Stitching', 'Finishing', 'QC', 'Packing'];
+
+async function ensureStageJobCards(workOrder) {
+  const existing = await JobCard.find({ woNumber: workOrder.woNumber });
+  if (existing.length) {
+    const synced = await syncWorkOrderStageInputs(workOrder.woNumber);
+    await Promise.all(synced.map((card) => syncProductionTracking(card)));
+    return synced;
+  }
+
+  const cards = await JobCard.insertMany(productionStages.map((stage, index) => ({
+    jobCardNumber: `${workOrder.woNumber}-${String(index + 1).padStart(2, '0')}-${stage.toUpperCase()}`,
+    workOrder: workOrder._id,
+    woNumber: workOrder.woNumber,
+    productStyle: workOrder.productStyle,
+    stageName: stage,
+    department: stage,
+    assignedTo: `${stage} Team`,
+    inputQuantity: index === 0 ? workOrder.plannedQty : 0,
+    pendingQuantity: index === 0 ? workOrder.plannedQty : 0,
+    completedQuantity: 0,
+    rejectedQuantity: 0,
+    reworkQuantity: 0,
+    startDate: workOrder.startDate || new Date(),
+    dueDate: workOrder.dueDate,
+    priority: workOrder.priority || 'Medium',
+    status: index === 0 && workOrder.status === 'In Progress' ? 'In Progress' : 'Pending',
+    progress: 0,
+    trendDate: new Date()
+  })));
+  await Promise.all(cards.map((card) => syncProductionTracking(card)));
+  return cards;
+}
 
 async function syncProductionDamage(jobCard, quantity, decision, remarks, recordedBy) {
   const existing = await ProductionDamage.findOne({ jobCard: jobCard._id });
@@ -105,6 +140,65 @@ async function syncNextStageInput(jobCard) {
   return nextCard;
 }
 
+async function getWorkOrderCostContext(woNumber) {
+  const workOrder = await WorkOrder.findOne({ woNumber }).populate('variant');
+  const bom = await BillOfMaterial.findOne({ bomNo: String(woNumber || '').replace(/^WO-/, '') });
+  const materialCost = Number(bom?.totalCost || 0);
+  const stageCost = await JobCard.find({ woNumber }).then((cards) => cards.reduce((sum, card) => sum + Number(card.stageCost || 0), 0));
+  const plannedQty = Number(workOrder?.plannedQty || bom?.baseQuantity || 1);
+  const variant = workOrder?.variant || (bom?.variant ? await ProductVariant.findById(bom.variant) : null);
+
+  return {
+    workOrder,
+    bom,
+    materialCost,
+    manufacturingCost: stageCost,
+    totalInvestment: materialCost + stageCost,
+    unitCost: plannedQty ? Number(((materialCost + stageCost) / plannedQty).toFixed(2)) : 0,
+    sellingPrice: Number(variant?.price || 0)
+  };
+}
+
+function stockMatchConditions(requirement) {
+  const conditions = [];
+  if (requirement.materialName && requirement.category) conditions.push({ materialName: requirement.materialName, category: requirement.category });
+  if (requirement.materialName) conditions.push({ materialName: requirement.materialName });
+  if (requirement.category) conditions.push({ category: requirement.category });
+  return conditions.length ? { $or: conditions } : {};
+}
+
+function quantityUnitText(quantity, unit) {
+  const unitLabel = unit === 'm' ? 'meters' : unit || 'units';
+  return `${Number(quantity || 0)} ${unitLabel}`;
+}
+
+async function refreshCategoryBackedStock(requirement) {
+  const names = [requirement.materialName, requirement.category].filter(Boolean);
+  if (!names.length) return null;
+
+  const category = await MaterialCategory.findOne({ name: { $in: names }, status: 'Active' })
+    || await ProductCategory.findOne({ name: { $in: names }, status: 'Active' });
+  if (!category) return null;
+  const quantity = category.totalMaterials ?? category.products ?? 0;
+  const unit = category.unit || requirement.unit || 'm';
+
+  return RawMaterialStock.findOneAndUpdate(
+    stockMatchConditions(requirement),
+    {
+      $setOnInsert: {
+        materialName: requirement.materialName || category.name,
+        category: requirement.category || category.name,
+        unit
+      },
+      $set: {
+        availableQuantity: Number(quantity || 0),
+        unit
+      }
+    },
+    { new: true, upsert: true, setDefaultsOnInsert: true }
+  );
+}
+
 async function syncWorkOrderStageInputs(woNumber) {
   const cards = await JobCard.find({ woNumber });
   const byStage = new Map(cards.map((card) => [card.stageName, card]));
@@ -142,6 +236,47 @@ function trendByDate(rows, dateKey, qtyKey) {
     if (row.status === 'Overdue') grouped[key].overdue += qty;
   });
   return Object.values(grouped);
+}
+
+async function buildJobCardPayload(filter = {}) {
+  const rows = await JobCard.find(filter).sort({ createdAt: -1 });
+  const count = (status) => rows.filter((row) => row.status === status).length;
+  const priorityCount = (priority) => rows.filter((row) => row.priority === priority).length;
+  const departments = Object.values(rows.reduce((acc, row) => {
+    acc[row.department] ||= { name: row.department, value: 0, color: colors[Object.keys(acc).length % colors.length] };
+    acc[row.department].value += 1;
+    return acc;
+  }, {}));
+  const trend = Object.values(rows.reduce((acc, row) => {
+    const key = dateText(row.trendDate);
+    acc[key] ||= { day: key, completed: 0, progress: 0, pending: 0, overdue: 0 };
+    if (row.status === 'Completed') acc[key].completed += 1;
+    if (row.status === 'In Progress') acc[key].progress += 1;
+    if (row.status === 'Pending') acc[key].pending += 1;
+    if (row.status === 'Overdue') acc[key].overdue += 1;
+    return acc;
+  }, {}));
+
+  return {
+    stats: {
+      total: rows.length,
+      inProgress: count('In Progress'),
+      completed: count('Completed'),
+      pending: count('Pending'),
+      overdue: count('Overdue')
+    },
+    rows,
+    overview: ['Completed', 'In Progress', 'Pending', 'Overdue'].map((label) => ({ label, value: count(label) })),
+    departments,
+    priorities: [
+      { label: 'High Priority', value: priorityCount('High') },
+      { label: 'Medium Priority', value: priorityCount('Medium') },
+      { label: 'Low Priority', value: priorityCount('Low') },
+      { label: 'No Priority', value: priorityCount('None') }
+    ],
+    trend,
+    activities: await Activity.find({ module: 'job-cards' }).sort({ createdAt: -1 }).limit(5)
+  };
 }
 
 exports.getOverview = asyncHandler(async (req, res) => {
@@ -432,44 +567,13 @@ exports.getProductionPlanning = asyncHandler(async (req, res) => {
 });
 
 exports.getJobCards = asyncHandler(async (req, res) => {
-  const rows = await JobCard.find().sort({ createdAt: -1 });
-  const count = (status) => rows.filter((row) => row.status === status).length;
-  const priorityCount = (priority) => rows.filter((row) => row.priority === priority).length;
-  const departments = Object.values(rows.reduce((acc, row) => {
-    acc[row.department] ||= { name: row.department, value: 0, color: colors[Object.keys(acc).length % colors.length] };
-    acc[row.department].value += 1;
-    return acc;
-  }, {}));
-  const trend = Object.values(rows.reduce((acc, row) => {
-    const key = dateText(row.trendDate);
-    acc[key] ||= { day: key, completed: 0, progress: 0, pending: 0, overdue: 0 };
-    if (row.status === 'Completed') acc[key].completed += 1;
-    if (row.status === 'In Progress') acc[key].progress += 1;
-    if (row.status === 'Pending') acc[key].pending += 1;
-    if (row.status === 'Overdue') acc[key].overdue += 1;
-    return acc;
-  }, {}));
+  ok(res, await buildJobCardPayload(req.query.stage ? { stageName: req.query.stage } : {}));
+});
 
-  ok(res, {
-    stats: {
-      total: rows.length,
-      inProgress: count('In Progress'),
-      completed: count('Completed'),
-      pending: count('Pending'),
-      overdue: count('Overdue')
-    },
-    rows,
-    overview: ['Completed', 'In Progress', 'Pending', 'Overdue'].map((label) => ({ label, value: count(label) })),
-    departments,
-    priorities: [
-      { label: 'High Priority', value: priorityCount('High') },
-      { label: 'Medium Priority', value: priorityCount('Medium') },
-      { label: 'Low Priority', value: priorityCount('Low') },
-      { label: 'No Priority', value: priorityCount('None') }
-    ],
-    trend,
-    activities: await Activity.find({ module: 'job-cards' }).sort({ createdAt: -1 }).limit(5)
-  });
+exports.getStageManagement = asyncHandler(async (req, res) => {
+  const stage = productionStages.find((item) => item.toLowerCase() === String(req.params.stage || '').toLowerCase());
+  if (!stage) throw new Error('Invalid manufacturing stage');
+  ok(res, await buildJobCardPayload({ stageName: stage }));
 });
 
 exports.getProductionDamage = asyncHandler(async (req, res) => {
@@ -502,35 +606,7 @@ exports.generateStageJobCards = asyncHandler(async (req, res) => {
   const workOrder = await WorkOrder.findById(req.params.id);
   if (!workOrder) throw new Error('Work order not found');
 
-  const existing = await JobCard.find({ woNumber: workOrder.woNumber });
-  if (existing.length) {
-    const synced = await syncWorkOrderStageInputs(workOrder.woNumber);
-    await Promise.all(synced.map((card) => syncProductionTracking(card)));
-    ok(res, synced, 'Stage job cards already exist');
-    return;
-  }
-
-  const cards = await JobCard.insertMany(productionStages.map((stage, index) => ({
-    jobCardNumber: `${workOrder.woNumber}-${String(index + 1).padStart(2, '0')}-${stage.toUpperCase()}`,
-    workOrder: workOrder._id,
-    woNumber: workOrder.woNumber,
-    productStyle: workOrder.productStyle,
-    stageName: stage,
-    department: stage,
-    assignedTo: `${stage} Team`,
-    inputQuantity: index === 0 ? workOrder.plannedQty : 0,
-    pendingQuantity: index === 0 ? workOrder.plannedQty : 0,
-    completedQuantity: 0,
-    rejectedQuantity: 0,
-    reworkQuantity: 0,
-    startDate: workOrder.startDate || new Date(),
-    dueDate: workOrder.dueDate,
-    priority: workOrder.priority || 'Medium',
-    status: index === 0 ? 'In Progress' : 'Pending',
-    progress: 0,
-    trendDate: new Date()
-  })));
-  await Promise.all(cards.map((card) => syncProductionTracking(card)));
+  const cards = await ensureStageJobCards(workOrder);
 
   await Activity.create({
     module: 'job-cards',
@@ -552,6 +628,8 @@ exports.completeJobCardStage = asyncHandler(async (req, res) => {
   const rejected = Number(req.body.rejectedQuantity || 0);
   const rework = Number(req.body.reworkQuantity || 0);
   const damageDecision = req.body.damageDecision || 'Damage';
+  const unitStageCost = Number(req.body.unitStageCost || 0);
+  const stageCost = Number(req.body.stageCost || (unitStageCost * completed) || 0);
   if (completed + rejected + rework > input) {
     throw new Error('Completed, rejected and rework quantities cannot exceed input quantity');
   }
@@ -561,6 +639,8 @@ exports.completeJobCardStage = asyncHandler(async (req, res) => {
   jobCard.reworkQuantity = rework;
   jobCard.pendingQuantity = Math.max(input - completed - rejected - rework, 0);
   jobCard.progress = input ? Number(((completed / input) * 100).toFixed(1)) : 0;
+  jobCard.unitStageCost = unitStageCost;
+  jobCard.stageCost = stageCost;
   jobCard.status = jobCard.pendingQuantity === 0 ? 'Completed' : 'In Progress';
   jobCard.startTime = jobCard.startTime || new Date();
   if (jobCard.status === 'Completed') jobCard.endTime = new Date();
@@ -650,10 +730,32 @@ exports.completeJobCardStage = asyncHandler(async (req, res) => {
     await workOrder.save();
   }
 
+  if (jobCard.stageName === 'Packing' && jobCard.status === 'Completed' && completed > 0 && !jobCard.postedToStock) {
+    const cost = await getWorkOrderCostContext(jobCard.woNumber);
+    const sku = cost.bom?.variantSku || cost.bom?.productSku || jobCard.woNumber;
+    await postFinishedGoods({
+      product: cost.workOrder?.product || cost.bom?.product,
+      variant: cost.workOrder?.variant?._id || cost.bom?.variant,
+      productName: jobCard.productStyle,
+      sku,
+      barcode: sku,
+      size: cost.bom?.size || '',
+      color: cost.bom?.color || '',
+      quantity: completed,
+      unitCost: cost.unitCost,
+      sellingPrice: cost.sellingPrice,
+      referenceType: 'JobCard',
+      referenceId: String(jobCard._id),
+      remarks: `${jobCard.jobCardNumber} packed and moved to finished goods`
+    });
+    jobCard.postedToStock = true;
+    await jobCard.save();
+  }
+
   await Activity.create({
     module: 'job-cards',
     title: `${jobCard.jobCardNumber} updated`,
-    description: `${jobCard.stageName}: ${completed} completed, ${rejected} rejected, ${rework} rework`,
+    description: `${jobCard.stageName}: ${completed} completed, ${rejected} rejected, ${rework} rework, cost ${stageCost}`,
     dateText: new Date().toLocaleString(),
     type: rejected > 0 ? 'warning' : 'success'
   });
@@ -665,16 +767,15 @@ exports.approveWorkOrder = asyncHandler(async (req, res) => {
   const workOrder = await WorkOrder.findById(req.params.id);
   if (!workOrder) throw new Error('Work order not found');
 
-  const requirements = workOrder.requiredMaterials?.length
-    ? workOrder.requiredMaterials
-    : [{ materialName: 'Fabrics', category: 'Fabrics', requiredQuantity: Math.max(workOrder.plannedQty, 1), unit: 'm' }];
+  const requirements = workOrder.requiredMaterials || [];
+  if (!requirements.length) throw new Error('Work order has no material requirements. Create it from an active BOM before approval.');
 
   for (const requirement of requirements) {
-    const stock = await RawMaterialStock.findOne({
-      $or: [{ materialName: requirement.materialName }, { category: requirement.category }]
-    }).sort({ availableQuantity: -1 });
+    await refreshCategoryBackedStock(requirement);
+    const stock = await RawMaterialStock.findOne(stockMatchConditions(requirement)).sort({ availableQuantity: -1 });
     if (!stock || stock.availableQuantity < requirement.requiredQuantity) {
-      throw new Error(`Insufficient stock for ${requirement.materialName || requirement.category}`);
+      const label = requirement.materialName || requirement.category || 'Raw material';
+      throw new Error(`Cannot approve Work Order. ${label} requires ${quantityUnitText(requirement.requiredQuantity, requirement.unit)}, but only ${quantityUnitText(stock?.availableQuantity || 0, stock?.unit || requirement.unit)} are available.`);
     }
   }
 
@@ -709,10 +810,8 @@ exports.startWorkOrder = asyncHandler(async (req, res) => {
   for (const requirement of workOrder.requiredMaterials) {
     const consumeQty = Number(requirement.reservedQuantity || requirement.requiredQuantity || 0);
     if (consumeQty <= 0) continue;
-    const stock = await RawMaterialStock.findOne({
-      $or: [{ materialName: requirement.materialName }, { category: requirement.category }]
-    }).sort({ reservedQuantity: -1 });
-    if (!stock || stock.reservedQuantity < consumeQty) throw new Error(`Reserved stock missing for ${requirement.materialName}`);
+    const stock = await RawMaterialStock.findOne(stockMatchConditions(requirement)).sort({ reservedQuantity: -1 });
+    if (!stock || stock.reservedQuantity < consumeQty) throw new Error(`Reserved stock missing for ${requirement.materialName || requirement.category}. Required ${consumeQty}, reserved ${Number(stock?.reservedQuantity || 0)}.`);
 
     stock.reservedQuantity -= consumeQty;
     stock.consumedQuantity += consumeQty;
@@ -740,6 +839,14 @@ exports.startWorkOrder = asyncHandler(async (req, res) => {
   workOrder.status = 'In Progress';
   workOrder.startDate = workOrder.startDate || new Date();
   await workOrder.save();
+  const cards = await ensureStageJobCards(workOrder);
+  const firstCard = cards.find((card) => card.stageName === productionStages[0]);
+  if (firstCard && firstCard.status !== 'In Progress') {
+    firstCard.status = 'In Progress';
+    firstCard.startDate = firstCard.startDate || workOrder.startDate;
+    await firstCard.save();
+    await syncProductionTracking(firstCard);
+  }
   await Activity.create({ module: 'production-tracking', title: `${workOrder.woNumber} started`, description: `${consumedQty} raw material units consumed`, dateText: new Date().toLocaleString(), type: 'purple' });
   ok(res, workOrder, 'Work order started and material consumed');
 });
