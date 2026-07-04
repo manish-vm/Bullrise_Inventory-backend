@@ -27,6 +27,16 @@ const dateFilter = (query) => {
   return filter;
 };
 
+const postedRawMaterialStockFilter = {
+  $or: [
+    { availableQuantity: { $gt: 0 } },
+    { reservedQuantity: { $gt: 0 } },
+    { consumedQuantity: { $gt: 0 } },
+    { rejectedQuantity: { $gt: 0 } },
+    { totalValue: { $gt: 0 } }
+  ]
+};
+
 async function repairZeroValueRawMaterialStock(items) {
   await Promise.all(items.map(async (item) => {
     if (Number(item.totalValue || 0) > 0 || Number(item.availableQuantity || 0) <= 0) return;
@@ -67,8 +77,8 @@ exports.listRawMaterialStock = asyncHandler(async (req, res) => {
   await postMissingCompletedGrns();
   const { search = '', category, status, warehouse } = req.query;
   const { page, limit, skip } = pageParams(req.query);
-  const filter = {};
-  if (search) filter.$or = [{ materialName: new RegExp(search, 'i') }, { supplierName: new RegExp(search, 'i') }, { category: new RegExp(search, 'i') }];
+  const filter = { $and: [postedRawMaterialStockFilter] };
+  if (search) filter.$and.push({ $or: [{ materialName: new RegExp(search, 'i') }, { supplierName: new RegExp(search, 'i') }, { category: new RegExp(search, 'i') }] });
   if (category && category !== 'All Categories') filter.category = category;
   if (status && status !== 'All Status') filter.status = status;
   if (warehouse) filter.warehouse = warehouse;
@@ -83,7 +93,7 @@ exports.listRawMaterialStock = asyncHandler(async (req, res) => {
 
 exports.rawMaterialStats = asyncHandler(async (req, res) => {
   await postMissingCompletedGrns();
-  const rows = await RawMaterialStock.find();
+  const rows = await RawMaterialStock.find(postedRawMaterialStockFilter);
   await repairZeroValueRawMaterialStock(rows);
   ok(res, {
     totalItems: rows.length,
@@ -206,11 +216,24 @@ exports.listLocations = asyncHandler(async (req, res) => {
   if (search) filter.$or = [{ name: new RegExp(search, 'i') }, { code: new RegExp(search, 'i') }, { warehouseCode: new RegExp(search, 'i') }];
   if (status && status !== 'All Status') filter.status = status;
   if (warehouse) filter.warehouse = warehouse;
-  const [items, total] = await Promise.all([
+  const [items, total, rawStock, finishedStock] = await Promise.all([
     WarehouseLocation.find(filter).populate('warehouse').sort('warehouseCode code').skip(skip).limit(limit),
-    WarehouseLocation.countDocuments(filter)
+    WarehouseLocation.countDocuments(filter),
+    RawMaterialStock.find({ location: { $ne: null } }),
+    FinishedGoodsStock.find({ location: { $ne: null } })
   ]);
-  ok(res, { items, total, page, pages: Math.ceil(total / limit) });
+  const usedByLocation = [...rawStock, ...finishedStock].reduce((map, stock) => {
+    const key = String(stock.location || '');
+    if (!key) return map;
+    map[key] = (map[key] || 0) + Number(stock.availableQuantity || 0);
+    return map;
+  }, {});
+  ok(res, {
+    items: items.map((item) => ({ ...item.toObject(), usedCapacity: usedByLocation[String(item._id)] || 0 })),
+    total,
+    page,
+    pages: Math.ceil(total / limit)
+  });
 });
 
 exports.createLocation = asyncHandler(async (req, res) => {

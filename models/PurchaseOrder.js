@@ -23,6 +23,7 @@ const purchaseOrderSchema = new mongoose.Schema({
   expectedDate: Date,
   totalAmount: { type: Number, default: 0 },
   orderedQuantity: { type: Number, default: 0 },
+  unit: { type: String, enum: ['m', 'pcs'], default: 'm' },
   receivedQuantity: { type: Number, default: 0 },
   status: { type: String, enum: ['Open', 'Partially Received', 'Completed', 'Cancelled'], default: 'Open' },
   items: [purchaseOrderItemSchema]

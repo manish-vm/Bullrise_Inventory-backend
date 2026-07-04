@@ -10,6 +10,19 @@ function lineKey(line = {}) {
   return String(line.poLineNo || line.lineNo || line.materialName || line.category || '').toLowerCase();
 }
 
+async function assertSingleReceiptPerPurchaseOrder(poNumber, excludeReceiptId) {
+  const normalizedPoNumber = String(poNumber || '').trim();
+  if (!normalizedPoNumber) return;
+
+  const filter = { poNumber: normalizedPoNumber };
+  if (excludeReceiptId) filter._id = { $ne: excludeReceiptId };
+
+  const existingReceipt = await GoodReceipt.findOne(filter).select('grnNumber poNumber');
+  if (existingReceipt) {
+    throw new Error(`GRN ${existingReceipt.grnNumber} already exists for purchase order ${normalizedPoNumber}`);
+  }
+}
+
 function poLineItems(po) {
   if (!po) return [];
   if (po.items?.length) return po.items;
@@ -21,7 +34,7 @@ function poLineItems(po) {
     quantity: Number(po.orderedQuantity || 0),
     receivedQuantity: Number(po.receivedQuantity || 0),
     rejectedQuantity: 0,
-    unit: 'm',
+    unit: po.unit || 'm',
     unitPrice: Number(po.orderedQuantity || 0) ? Number(po.totalAmount || 0) / Number(po.orderedQuantity || 1) : 0,
     amount: Number(po.totalAmount || 0),
     status: po.status || 'Open'
@@ -155,6 +168,7 @@ exports.getGoodReceipts = asyncHandler(async (req, res) => {
 });
 
 exports.createGoodReceipt = asyncHandler(async (req, res) => {
+  await assertSingleReceiptPerPurchaseOrder(req.body.poNumber);
   const supplier = req.body.supplier ? await Supplier.findById(req.body.supplier) : null;
   const po = req.body.poNumber ? await PurchaseOrder.findOne({ poNumber: req.body.poNumber }) : null;
   const receiptItems = receiptLinesFromBody(req.body, po);
@@ -201,6 +215,9 @@ exports.getGoodReceipt = asyncHandler(async (req, res) => ok(res, await GoodRece
 exports.updateGoodReceipt = asyncHandler(async (req, res) => {
   const receipt = await GoodReceipt.findById(req.params.id);
   if (!receipt) throw new Error('GRN not found');
+  if (req.body.poNumber !== undefined) {
+    await assertSingleReceiptPerPurchaseOrder(req.body.poNumber, receipt._id);
+  }
   Object.assign(receipt, req.body);
 
   if (receipt.status === 'Completed' && !receipt.stockPosted) {

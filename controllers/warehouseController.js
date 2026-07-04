@@ -2,6 +2,8 @@ const asyncHandler = require('express-async-handler');
 const Warehouse = require('../models/Warehouse');
 const Activity = require('../models/Activity');
 const StockMovement = require('../models/StockMovement');
+const RawMaterialStock = require('../models/RawMaterialStock');
+const FinishedGoodsStock = require('../models/FinishedGoodsStock');
 const { ok, created } = require('../utils/apiResponse');
 
 const pct = (used, total) => total ? Math.round((used / total) * 1000) / 10 : 0;
@@ -14,12 +16,45 @@ async function nextWarehouseColor() {
 }
 
 exports.getWarehouseOverview = asyncHandler(async (req, res) => {
-  const [rows, activities, movements] = await Promise.all([
+  const [rows, activities, movements, rawStock, finishedStock] = await Promise.all([
     Warehouse.find().sort({ code: 1 }),
     Activity.find({ module: 'warehouse-overview' }).sort({ createdAt: -1 }).limit(5),
-    StockMovement.find().sort({ createdAt: -1 }).limit(200)
+    StockMovement.find().sort({ createdAt: -1 }).limit(200),
+    RawMaterialStock.find(),
+    FinishedGoodsStock.find()
   ]);
-  const totalStock = rows.reduce((sum, row) => sum + row.stockUnits, 0);
+  const stockByWarehouse = [...rawStock, ...finishedStock].reduce((map, stock) => {
+    const key = String(stock.warehouse || '');
+    if (!key) return map;
+    if (!map[key]) map[key] = { units: 0, value: 0 };
+    const availableQuantity = Number(stock.availableQuantity || 0);
+    map[key].units += availableQuantity;
+    map[key].value += Number(stock.totalValue ?? (availableQuantity * Number(stock.unitCost || 0)));
+    return map;
+  }, {});
+  const movementByWarehouse = movements.reduce((map, movement) => {
+    const key = String(movement.warehouseId || '');
+    if (!key) return map;
+    if (!map[key]) map[key] = { stockIn: 0, stockOut: 0 };
+    map[key].stockIn += Number(movement.quantityIn || 0);
+    map[key].stockOut += Number(movement.quantityOut || 0);
+    return map;
+  }, {});
+  const overviewRows = rows.map((row) => {
+    const id = String(row._id);
+    const stock = stockByWarehouse[id] || { units: 0, value: 0 };
+    const movement = movementByWarehouse[id] || { stockIn: 0, stockOut: 0 };
+    return {
+      ...row.toObject(),
+      usedCapacity: stock.units,
+      stockUnits: stock.units,
+      stockValue: stock.value,
+      stockInUnits: movement.stockIn,
+      stockOutUnits: movement.stockOut,
+      utilization: pct(stock.units, row.totalCapacity)
+    };
+  });
+  const totalStock = overviewRows.reduce((sum, row) => sum + row.stockUnits, 0);
   const movementByDay = movements.reduce((map, movement) => {
     const label = new Date(movement.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
     if (!map[label]) map[label] = { day: label, stockIn: 0, stockOut: 0 };
@@ -32,19 +67,19 @@ exports.getWarehouseOverview = asyncHandler(async (req, res) => {
     stats: {
       totalWarehouses: rows.length,
       totalStock,
-      stockValue: rows.reduce((sum, row) => sum + row.stockValue, 0),
-      stockIn: rows.reduce((sum, row) => sum + row.stockInUnits, 0),
-      stockOut: rows.reduce((sum, row) => sum + row.stockOutUnits, 0)
+      stockValue: overviewRows.reduce((sum, row) => sum + row.stockValue, 0),
+      stockIn: overviewRows.reduce((sum, row) => sum + row.stockInUnits, 0),
+      stockOut: overviewRows.reduce((sum, row) => sum + row.stockOutUnits, 0)
     },
-    rows: rows.map((row) => ({ ...row.toObject(), utilization: pct(row.usedCapacity, row.totalCapacity) })),
-    distribution: rows.map((row) => ({
+    rows: overviewRows,
+    distribution: overviewRows.map((row) => ({
       label: row.name,
       value: row.stockUnits,
       percent: totalStock ? Math.round((row.stockUnits / totalStock) * 1000) / 10 : 0
     })),
     stockMovement: Object.values(movementByDay).reverse().slice(-7),
-    utilization: rows.map((row) => ({ code: row.code, value: pct(row.usedCapacity, row.totalCapacity), color: row.color })),
-    alerts: rows
+    utilization: overviewRows.map((row) => ({ code: row.code, value: row.utilization, color: row.color })),
+    alerts: overviewRows
       .filter((row) => row.totalCapacity && row.usedCapacity / row.totalCapacity > 0.9)
       .map((row) => ({ product: row.name, warehouse: row.code, quantity: row.usedCapacity })),
     activities

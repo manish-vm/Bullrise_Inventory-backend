@@ -14,8 +14,29 @@ const statusFor = (available, reorderLevel) => {
   return 'In Stock';
 };
 
-async function defaultWarehouse() {
-  return Warehouse.findOne().sort({ code: 1 });
+const validMaterialCategoryUnits = new Set(['m', 'pcs']);
+const normalizeUnit = (unit, fallback = 'm') => {
+  const value = String(unit || '').trim();
+  return validMaterialCategoryUnits.has(value) ? value : fallback;
+};
+
+async function defaultWarehouse(kind) {
+  const patterns = kind === 'FINISHED_GOOD'
+    ? [/finished/i, /fg/i]
+    : kind === 'RAW_MATERIAL'
+      ? [/raw/i, /material/i]
+      : [];
+
+  for (const pattern of patterns) {
+    const warehouse = await Warehouse.findOne({
+      status: 'Active',
+      $or: [{ type: pattern }, { name: pattern }, { code: pattern }]
+    }).sort({ code: 1 });
+    if (warehouse) return warehouse;
+  }
+
+  const activeWarehouse = await Warehouse.findOne({ status: 'Active' }).sort({ code: 1 });
+  return activeWarehouse || Warehouse.findOne().sort({ code: 1 });
 }
 
 async function createMovement(payload) {
@@ -32,7 +53,7 @@ async function createMovement(payload) {
 async function receiveRawMaterialFromGRN(receipt) {
   if (!['Completed', 'Under QC'].includes(receipt.status)) return null;
 
-  const warehouse = await defaultWarehouse();
+  const warehouse = await defaultWarehouse('RAW_MATERIAL');
   const lines = receipt.items?.length ? receipt.items : [{
     materialName: receipt.category || 'Raw Material',
     category: receipt.category,
@@ -79,7 +100,7 @@ async function receiveRawMaterialFromGRN(receipt) {
           supplier: receipt.supplier,
           supplierName: receipt.supplierName,
           warehouse: warehouse?._id,
-          unit: line.unit || receipt.unit
+          unit: normalizeUnit(line.unit || receipt.unit)
         },
         $inc: {
           availableQuantity: acceptedQuantity,
@@ -97,7 +118,7 @@ async function receiveRawMaterialFromGRN(receipt) {
     const materialItem = await MaterialCategory.findOne({ name: { $in: [materialName, category].filter(Boolean) } });
     if (materialItem) {
       materialItem.totalMaterials = stock.availableQuantity;
-      materialItem.unit = stock.unit || line.unit || receipt.unit || materialItem.unit;
+      materialItem.unit = normalizeUnit(stock.unit || line.unit || receipt.unit, materialItem.unit);
       await materialItem.save();
     }
 
@@ -116,7 +137,7 @@ async function receiveRawMaterialFromGRN(receipt) {
         acceptedQuantity,
         rejectedQuantity,
         availableQuantity: acceptedQuantity,
-        unit: line.unit || receipt.unit,
+        unit: normalizeUnit(line.unit || receipt.unit),
         unitCost,
         totalValue: acceptedQuantity * unitCost,
         status: acceptedQuantity > 0 ? 'Available' : 'Rejected'
@@ -160,6 +181,7 @@ async function reserveRawMaterial({ materialName, category, quantity, referenceT
 
   stock.availableQuantity -= quantity;
   stock.reservedQuantity += quantity;
+  stock.totalValue = Math.max(Number(stock.totalValue || 0) - (quantity * Number(stock.unitCost || 0)), 0);
   stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
   await stock.save();
 
@@ -195,7 +217,7 @@ async function reserveRawMaterial({ materialName, category, quantity, referenceT
 }
 
 async function postFinishedGoods({ product, variant, productName, sku, barcode, size, color, quantity, warehouse, unitCost = 0, sellingPrice = 0, referenceType, referenceId, remarks }) {
-  const defaultWh = warehouse ? null : await defaultWarehouse();
+  const defaultWh = warehouse ? null : await defaultWarehouse('FINISHED_GOOD');
   const warehouseId = warehouse || defaultWh?._id;
 
   const skuDoc = await SKU.findOneAndUpdate(

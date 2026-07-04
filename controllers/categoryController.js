@@ -12,19 +12,14 @@ async function nextCategoryColor() {
 
 async function syncRawMaterialItemStock(item) {
   if (!item?.name) return null;
-  return RawMaterialStock.findOneAndUpdate(
+  return RawMaterialStock.updateMany(
     { $or: [{ materialName: item.name }, { category: item.name }] },
     {
-      $setOnInsert: {
-        materialName: item.name,
-        category: item.name
-      },
       $set: {
         unit: item.unit || 'm',
         reorderLevel: Number(item.lowStockItems || 0)
       }
-    },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
+    }
   );
 }
 
@@ -71,7 +66,6 @@ exports.getCategories = asyncHandler(async (req, res) => {
 });
 exports.createCategory = asyncHandler(async (req, res) => {
   const item = await MaterialCategory.create({ ...stripStockQuantity(req.body), color: await nextCategoryColor() });
-  await syncRawMaterialItemStock(item);
   const stockTotals = await stockQuantityByItemName();
   created(res, withStockQuantity(item, stockTotals));
 });

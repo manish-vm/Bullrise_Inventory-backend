@@ -18,6 +18,10 @@ const pct = (part, total) => total ? Number(((part / total) * 100).toFixed(1)) :
 const dateText = (d) => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 const colors = ['#16a34a', '#2f80ed', '#8b5cf6', '#f97316', '#ef4444'];
 const productionStages = ['Cutting', 'Stitching', 'Finishing', 'QC', 'Packing'];
+const stageOrder = (stage) => {
+  const index = productionStages.indexOf(stage);
+  return index === -1 ? productionStages.length : index;
+};
 
 async function ensureStageJobCards(workOrder) {
   const existing = await JobCard.find({ woNumber: workOrder.woNumber });
@@ -239,7 +243,11 @@ function trendByDate(rows, dateKey, qtyKey) {
 }
 
 async function buildJobCardPayload(filter = {}) {
-  const rows = await JobCard.find(filter).sort({ createdAt: -1 });
+  const rows = (await JobCard.find(filter)).sort((a, b) => (
+    String(a.woNumber || '').localeCompare(String(b.woNumber || ''))
+    || stageOrder(a.stageName) - stageOrder(b.stageName)
+    || String(a.jobCardNumber || '').localeCompare(String(b.jobCardNumber || ''))
+  ));
   const count = (status) => rows.filter((row) => row.status === status).length;
   const priorityCount = (priority) => rows.filter((row) => row.priority === priority).length;
   const departments = Object.values(rows.reduce((acc, row) => {
