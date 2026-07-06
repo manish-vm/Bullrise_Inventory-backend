@@ -4,6 +4,14 @@ const Supplier = require('../models/Supplier');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
 
+async function nextPurchaseOrderNumber() {
+  const year = new Date().getFullYear();
+  const prefix = `PO-${year}-`;
+  const latest = await PurchaseOrder.findOne({ poNumber: new RegExp(`^${prefix}`) }).sort({ poNumber: -1 }).select('poNumber');
+  const next = Number(String(latest?.poNumber || '').split('-').pop() || 0) + 1;
+  return `${prefix}${String(next).padStart(4, '0')}`;
+}
+
 function normalizeItems(items = []) {
   return items.map((item, index) => {
     const quantity = Number(item.quantity || 0);
@@ -47,6 +55,9 @@ exports.getPurchaseOrders = asyncHandler(async (req, res) => {
 exports.createPurchaseOrder = asyncHandler(async (req, res) => {
   const supplier = await Supplier.findById(req.body.supplier);
   const payload = { ...req.body, supplierName: req.body.supplierName || supplier?.name };
+  const requestedPoNumber = String(payload.poNumber || '').trim();
+  payload.poNumber = requestedPoNumber && requestedPoNumber !== 'Auto Generate' ? requestedPoNumber : await nextPurchaseOrderNumber();
+  payload.creditDays = payload.paymentMode === 'Cash' ? 0 : Number(payload.creditDays || 30);
   if (req.body.orderedQuantity != null && payload.items?.length === 1) {
     payload.items[0].quantity = Number(req.body.orderedQuantity || 0);
   }
@@ -65,6 +76,7 @@ exports.updatePurchaseOrder = asyncHandler(async (req, res) => {
   const po = await PurchaseOrder.findById(req.params.id);
   if (!po) throw new Error('Purchase order not found');
   Object.assign(po, req.body);
+  po.creditDays = po.paymentMode === 'Cash' ? 0 : Number(po.creditDays || 30);
   if (req.body.orderedQuantity != null && po.items?.length === 1) {
     po.items[0].quantity = Number(req.body.orderedQuantity || 0);
   }

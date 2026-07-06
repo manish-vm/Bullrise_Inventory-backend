@@ -25,6 +25,7 @@ const groupCount = (rows, key) => rows.reduce((acc, row) => {
 const plain = (doc) => (typeof doc.toObject === 'function' ? doc.toObject() : doc);
 const roundMoney = (value) => Number(Number(value || 0).toFixed(2));
 const marginPercent = (profit, revenue) => revenue ? Number(((profit / revenue) * 100).toFixed(2)) : 0;
+const daysBetween = (from, to = new Date()) => Math.max(Math.floor((to - from) / 86400000), 0);
 
 async function buildCostTracking() {
   const [pos, grns, raw, boms, workOrders, jobCards, damages, finished, sales] = await Promise.all([
@@ -217,6 +218,50 @@ exports.summary = asyncHandler(async (req, res) => {
 });
 
 exports.costTracking = asyncHandler(async (req, res) => ok(res, await buildCostTracking()));
+
+exports.purchaseDetails = asyncHandler(async (req, res) => {
+  const { period = '30', paymentMode = 'All', purchaseType = 'All', creditDays = 'All' } = req.query;
+  const since = new Date();
+  since.setDate(since.getDate() - Number(period || 30));
+  const filter = { orderDate: { $gte: since } };
+  if (paymentMode !== 'All') filter.paymentMode = paymentMode;
+  if (purchaseType !== 'All') filter.purchaseType = purchaseType;
+  if (creditDays !== 'All') filter.creditDays = Number(creditDays);
+
+  const rows = await PurchaseOrder.find(filter).populate('supplier').sort({ orderDate: -1, createdAt: -1 }).limit(500);
+  const items = rows.map((row) => {
+    const orderDate = row.orderDate || row.createdAt;
+    const ageDays = orderDate ? daysBetween(new Date(orderDate)) : 0;
+    return {
+      _id: row._id,
+      poNumber: row.poNumber,
+      quotationNumber: row.quotationNumber,
+      supplierName: row.supplierName,
+      category: row.category,
+      purchaseType: row.purchaseType || 'Raw Material Purchase',
+      paymentMode: row.paymentMode || 'Credit',
+      creditDays: Number(row.creditDays || 0),
+      orderDate,
+      totalAmount: row.totalAmount,
+      status: row.status,
+      ageDays,
+      dueInDays: row.paymentMode === 'Cash' ? 0 : Math.max(Number(row.creditDays || 0) - ageDays, 0)
+    };
+  });
+
+  ok(res, {
+    filters: { period: Number(period || 30), paymentMode, purchaseType, creditDays },
+    summary: {
+      rows: items.length,
+      value: sum(items, 'totalAmount'),
+      cashValue: sum(items.filter((row) => row.paymentMode === 'Cash'), 'totalAmount'),
+      creditValue: sum(items.filter((row) => row.paymentMode === 'Credit'), 'totalAmount'),
+      ecommerceValue: sum(items.filter((row) => row.purchaseType === 'E-Commerce Purchase'), 'totalAmount'),
+      readyProductValue: sum(items.filter((row) => row.purchaseType === 'Ready Product Purchase'), 'totalAmount')
+    },
+    items
+  });
+});
 
 exports.transactions = asyncHandler(async (req, res) => {
   const { type = 'movements', limit = 1000 } = req.query;

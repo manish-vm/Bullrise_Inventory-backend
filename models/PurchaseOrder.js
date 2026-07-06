@@ -16,6 +16,11 @@ const purchaseOrderItemSchema = new mongoose.Schema({
 
 const purchaseOrderSchema = new mongoose.Schema({
   poNumber: { type: String, required: true, unique: true },
+  quotationNumber: String,
+  quotationDate: Date,
+  purchaseType: { type: String, enum: ['Raw Material Purchase', 'Ready Product Purchase', 'E-Commerce Purchase'], default: 'Raw Material Purchase' },
+  paymentMode: { type: String, enum: ['Cash', 'Credit'], default: 'Credit' },
+  creditDays: { type: Number, enum: [0, 30, 60], default: 30 },
   supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
   supplierName: String,
   category: String,

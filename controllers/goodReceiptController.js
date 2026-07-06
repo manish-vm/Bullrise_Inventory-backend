@@ -187,6 +187,7 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
     unit: req.body.unit || receiptItems[0]?.unit || 'm',
     receiptValue: req.body.receiptValue || receiptValue
   });
+  receipt.goodsReceivedDate = receipt.goodsReceivedDate || receipt.receiptDate;
   if (receipt.status === 'Completed') {
     await receiveRawMaterialFromGRN(receipt);
     receipt.stockPosted = true;
@@ -219,6 +220,7 @@ exports.updateGoodReceipt = asyncHandler(async (req, res) => {
     await assertSingleReceiptPerPurchaseOrder(req.body.poNumber, receipt._id);
   }
   Object.assign(receipt, req.body);
+  receipt.goodsReceivedDate = receipt.goodsReceivedDate || receipt.receiptDate;
 
   if (receipt.status === 'Completed' && !receipt.stockPosted) {
     await receiveRawMaterialFromGRN(receipt);
@@ -231,6 +233,24 @@ exports.updateGoodReceipt = asyncHandler(async (req, res) => {
   ok(res, receipt);
 });
 exports.deleteGoodReceipt = asyncHandler(async (req, res) => { await GoodReceipt.findByIdAndDelete(req.params.id); ok(res, null, 'Deleted'); });
+
+exports.transferGoodReceipt = asyncHandler(async (req, res) => {
+  const receipt = await GoodReceipt.findById(req.params.id);
+  if (!receipt) throw new Error('GRN not found');
+  if (!receipt.stockPosted) throw new Error('Approve and post GRN before transfer');
+  receipt.transferStatus = 'Transferred';
+  receipt.transferredAt = new Date();
+  receipt.transferredBy = req.user?.name || 'System';
+  await receipt.save();
+  await Activity.create({
+    module: 'good-receipts',
+    title: `${receipt.grnNumber} transferred`,
+    description: `${receipt.supplierName || 'Supplier'} receipt moved to stock`,
+    dateText: new Date().toLocaleString(),
+    type: 'success'
+  });
+  ok(res, receipt, 'GRN transferred');
+});
 
 exports.approveGoodReceipt = asyncHandler(async (req, res) => {
   const receipt = await GoodReceipt.findById(req.params.id);
