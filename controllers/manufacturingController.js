@@ -6,7 +6,7 @@ const ProductionPlan = require('../models/ProductionPlan');
 const JobCard = require('../models/JobCard');
 const Activity = require('../models/Activity');
 const { ok } = require('../utils/apiResponse');
-const { createMovement, postFinishedGoods, reserveRawMaterial } = require('../services/stockService');
+const { createMovement, postFinishedGoods, reserveRawMaterial, rawMaterialStockFilter, statusFor } = require('../services/stockService');
 const RawMaterialStock = require('../models/RawMaterialStock');
 const BillOfMaterial = require('../models/BillOfMaterial');
 const ProductionDamage = require('../models/ProductionDamage');
@@ -164,11 +164,16 @@ async function getWorkOrderCostContext(woNumber) {
 }
 
 function stockMatchConditions(requirement) {
-  const conditions = [];
-  if (requirement.materialName && requirement.category) conditions.push({ materialName: requirement.materialName, category: requirement.category });
-  if (requirement.materialName) conditions.push({ materialName: requirement.materialName });
-  if (requirement.category) conditions.push({ category: requirement.category });
-  return conditions.length ? { $or: conditions } : {};
+  return rawMaterialStockFilter(requirement);
+}
+
+async function availableQuantityForRequirement(requirement) {
+  const rows = await RawMaterialStock.find(stockMatchConditions(requirement));
+  return {
+    rows,
+    quantity: rows.reduce((total, row) => total + Number(row.availableQuantity || 0), 0),
+    unit: rows[0]?.unit || requirement.unit
+  };
 }
 
 function quantityUnitText(quantity, unit) {
@@ -179,6 +184,8 @@ function quantityUnitText(quantity, unit) {
 async function refreshCategoryBackedStock(requirement) {
   const names = [requirement.materialName, requirement.category].filter(Boolean);
   if (!names.length) return null;
+  const existing = await RawMaterialStock.findOne(stockMatchConditions(requirement)).sort({ availableQuantity: -1 });
+  if (existing) return existing;
 
   const category = await MaterialCategory.findOne({ name: { $in: names }, status: 'Active' })
     || await ProductCategory.findOne({ name: { $in: names }, status: 'Active' });
@@ -186,21 +193,12 @@ async function refreshCategoryBackedStock(requirement) {
   const quantity = category.totalMaterials ?? category.products ?? 0;
   const unit = category.unit || requirement.unit || 'm';
 
-  return RawMaterialStock.findOneAndUpdate(
-    stockMatchConditions(requirement),
-    {
-      $setOnInsert: {
-        materialName: requirement.materialName || category.name,
-        category: requirement.category || category.name,
-        unit
-      },
-      $set: {
-        availableQuantity: Number(quantity || 0),
-        unit
-      }
-    },
-    { new: true, upsert: true, setDefaultsOnInsert: true }
-  );
+  return RawMaterialStock.create({
+    materialName: requirement.materialName || category.name,
+    category: requirement.category || category.name,
+    availableQuantity: Number(quantity || 0),
+    unit
+  });
 }
 
 async function syncWorkOrderStageInputs(woNumber) {
@@ -780,10 +778,10 @@ exports.approveWorkOrder = asyncHandler(async (req, res) => {
 
   for (const requirement of requirements) {
     await refreshCategoryBackedStock(requirement);
-    const stock = await RawMaterialStock.findOne(stockMatchConditions(requirement)).sort({ availableQuantity: -1 });
-    if (!stock || stock.availableQuantity < requirement.requiredQuantity) {
+    const available = await availableQuantityForRequirement(requirement);
+    if (available.quantity < requirement.requiredQuantity) {
       const label = requirement.materialName || requirement.category || 'Raw material';
-      throw new Error(`Cannot approve Work Order. ${label} requires ${quantityUnitText(requirement.requiredQuantity, requirement.unit)}, but only ${quantityUnitText(stock?.availableQuantity || 0, stock?.unit || requirement.unit)} are available.`);
+      throw new Error(`Cannot approve Work Order. ${label} requires ${quantityUnitText(requirement.requiredQuantity, requirement.unit)}, but only ${quantityUnitText(available.quantity, available.unit || requirement.unit)} are available.`);
     }
   }
 
@@ -818,29 +816,52 @@ exports.startWorkOrder = asyncHandler(async (req, res) => {
   for (const requirement of workOrder.requiredMaterials) {
     const consumeQty = Number(requirement.reservedQuantity || requirement.requiredQuantity || 0);
     if (consumeQty <= 0) continue;
-    const stock = await RawMaterialStock.findOne(stockMatchConditions(requirement)).sort({ reservedQuantity: -1 });
-    if (!stock || stock.reservedQuantity < consumeQty) throw new Error(`Reserved stock missing for ${requirement.materialName || requirement.category}. Required ${consumeQty}, reserved ${Number(stock?.reservedQuantity || 0)}.`);
+    let remaining = consumeQty;
+    let stockRows = await RawMaterialStock.find(stockMatchConditions(requirement)).sort({ reservedQuantity: -1 });
+    let reservedAvailable = stockRows.reduce((total, row) => total + Number(row.reservedQuantity || 0), 0);
+    if (reservedAvailable < consumeQty) {
+      await reserveRawMaterial({
+        materialName: requirement.materialName,
+        category: requirement.category,
+        quantity: consumeQty - reservedAvailable,
+        referenceType: 'ManufacturingWorkOrder',
+        referenceId: String(workOrder._id),
+        remarks: `${workOrder.woNumber} auto-reserved missing material before production start`
+      });
+      stockRows = await RawMaterialStock.find(stockMatchConditions(requirement)).sort({ reservedQuantity: -1 });
+      reservedAvailable = stockRows.reduce((total, row) => total + Number(row.reservedQuantity || 0), 0);
+    }
+    if (reservedAvailable < consumeQty) {
+      throw new Error(`Reserved stock missing for ${requirement.materialName || requirement.category}. Required ${consumeQty}, reserved ${reservedAvailable}. Approve the work order again or add stock in Raw Materials > Material Inventory.`);
+    }
 
-    stock.reservedQuantity -= consumeQty;
-    stock.consumedQuantity += consumeQty;
-    await stock.save();
+    for (const stock of stockRows) {
+      if (remaining <= 0) break;
+      const take = Math.min(Number(stock.reservedQuantity || 0), remaining);
+      if (take <= 0) continue;
+      stock.reservedQuantity -= take;
+      stock.consumedQuantity += take;
+      stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
+      await stock.save();
+      remaining -= take;
+
+      await createMovement({
+        movementType: 'MATERIAL_CONSUMED',
+        itemType: 'RAW_MATERIAL',
+        referenceType: 'ManufacturingWorkOrder',
+        referenceId: String(workOrder._id),
+        materialId: requirement.materialName || requirement.category,
+        warehouseId: stock.warehouse,
+        locationId: stock.location,
+        quantityOut: take,
+        balanceAfter: stock.availableQuantity,
+        unitCost: stock.unitCost,
+        totalValue: take * Number(stock.unitCost || 0),
+        remarks: `${workOrder.woNumber} production started`
+      });
+    }
     requirement.consumedQuantity = consumeQty;
     consumedQty += consumeQty;
-
-    await createMovement({
-      movementType: 'MATERIAL_CONSUMED',
-      itemType: 'RAW_MATERIAL',
-      referenceType: 'ManufacturingWorkOrder',
-      referenceId: String(workOrder._id),
-      materialId: requirement.materialName,
-      warehouseId: stock.warehouse,
-      locationId: stock.location,
-      quantityOut: consumeQty,
-      balanceAfter: stock.availableQuantity,
-      unitCost: stock.unitCost,
-      totalValue: consumeQty * Number(stock.unitCost || 0),
-      remarks: `${workOrder.woNumber} production started`
-    });
   }
 
   workOrder.consumedQty = consumedQty;

@@ -11,6 +11,11 @@ const warehouseSchema = new mongoose.Schema({
   stockValue: { type: Number, default: 0 },
   stockInUnits: { type: Number, default: 0 },
   stockOutUnits: { type: Number, default: 0 },
+  reservedStock: { type: Number, default: 0 },
+  availableStock: { type: Number, default: 0 },
+  incomingStock: { type: Number, default: 0 },
+  outgoingStock: { type: Number, default: 0 },
+  inventoryValue: { type: Number, default: 0 },
   color: { type: String, default: '#2f80ed' },
   status: { type: String, enum: ['Active', 'Inactive', 'Maintenance'], default: 'Active' }
 }, { timestamps: true });

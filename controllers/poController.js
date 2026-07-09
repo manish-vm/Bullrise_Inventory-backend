@@ -15,14 +15,18 @@ async function nextPurchaseOrderNumber() {
 function normalizeItems(items = []) {
   return items.map((item, index) => {
     const quantity = Number(item.quantity || 0);
+    const unitPrice = Number(item.unitPrice || 0);
     const receivedQuantity = Number(item.receivedQuantity || 0);
     const rejectedQuantity = Number(item.rejectedQuantity || 0);
     const balanceQuantity = Math.max(quantity - receivedQuantity - rejectedQuantity, 0);
-    const amount = item.amount != null ? Number(item.amount || 0) : quantity * Number(item.unitPrice || 0);
+    const amount = quantity * unitPrice;
     return {
       ...item,
       lineNo: item.lineNo || index + 1,
+      materialName: item.materialName || item.category,
+      category: item.category || item.materialName,
       quantity,
+      unitPrice,
       receivedQuantity,
       rejectedQuantity,
       balanceQuantity,
@@ -38,7 +42,11 @@ function applyPoTotals(po) {
   const itemReceivedQuantity = po.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
   po.orderedQuantity = itemQuantity || Number(po.orderedQuantity || 0);
   po.receivedQuantity = itemReceivedQuantity || Number(po.receivedQuantity || 0);
-  po.totalAmount = po.totalAmount || po.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  if (po.items.length) {
+    po.category = po.items[0].category || po.items[0].materialName || po.category;
+    po.unit = po.items[0].unit || po.unit;
+    po.totalAmount = po.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  }
 }
 
 exports.getPurchaseOrders = asyncHandler(async (req, res) => {
@@ -66,7 +74,12 @@ exports.createPurchaseOrder = asyncHandler(async (req, res) => {
   }
   payload.items = normalizeItems(payload.items || []);
   payload.orderedQuantity = payload.orderedQuantity || payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  payload.totalAmount = payload.totalAmount || payload.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  if (payload.items.length) {
+    payload.category = payload.items[0].category || payload.items[0].materialName || payload.category;
+    payload.unit = payload.items[0].unit || payload.unit;
+    payload.receivedQuantity = payload.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
+    payload.totalAmount = payload.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  }
   const po = await PurchaseOrder.create(payload);
   await Activity.create({ module: 'purchase-orders', title: `${po.poNumber} created`, description: new Date().toLocaleString(), type: 'success' });
   created(res, po);

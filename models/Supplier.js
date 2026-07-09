@@ -11,7 +11,20 @@ const supplierSchema = new mongoose.Schema({
   phone: { type: String, required: true },
   email: { type: String, required: true },
   status: { type: String, enum: ['Active', 'Inactive'], default: 'Active' },
-  ordersCount: { type: Number, default: 0 }
+  ordersCount: { type: Number, default: 0 },
+  gstNumber: String,
+  pan: String,
+  address: String,
+  paymentTerms: { type: String, default: 'Net 30' },
+  currency: { type: String, default: 'INR' },
+  leadTimeDays: { type: Number, default: 0 },
+  vendorRating: { type: Number, default: 0, min: 0, max: 5 },
+  productsSupplied: [String],
+  averageDeliveryTimeDays: { type: Number, default: 0 },
+  averageQualityScore: { type: Number, default: 0 },
+  rejectedDeliveries: { type: Number, default: 0 },
+  completedDeliveries: { type: Number, default: 0 },
+  pendingDeliveries: { type: Number, default: 0 }
 }, { timestamps: true });
 
 module.exports = mongoose.model('Supplier', supplierSchema);
