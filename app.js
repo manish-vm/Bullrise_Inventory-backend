@@ -44,6 +44,7 @@ app.use('/api/inventory', protect, allowRoles('Super Admin', 'Admin', 'Warehouse
 app.use('/api/sales', protect, allowRoles('Super Admin', 'Admin', 'Sales Staff'), require('./routes/salesRoutes'));
 app.use('/api/customer-returns', protect, allowRoles('Super Admin', 'Admin', 'Sales Staff'), require('./routes/customerReturnRoutes'));
 app.use('/api/reports', protect, allowRoles('Super Admin', 'Admin'), require('./routes/reportRoutes'));
+app.use('/api/enterprise-inventory', protect, allowRoles('Super Admin', 'Admin', 'Warehouse Manager', 'Production Manager'), require('./routes/enterpriseInventoryRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);

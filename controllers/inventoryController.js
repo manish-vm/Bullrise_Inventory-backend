@@ -303,16 +303,57 @@ function stockIdentity(stock, itemType) {
   return { materialName: stock.materialName, category: stock.category, supplier: stock.supplier, supplierName: stock.supplierName, unit: stock.unit };
 }
 
+async function updateWarehouseCapacity(warehouseId, { stockIn = 0, stockOut = 0, valueIn = 0, valueOut = 0 } = {}) {
+  if (!warehouseId) return;
+  const warehouse = await Warehouse.findById(warehouseId);
+  if (!warehouse) return;
+
+  warehouse.stockInUnits = Number(warehouse.stockInUnits || 0) + Number(stockIn || 0);
+  warehouse.stockOutUnits = Number(warehouse.stockOutUnits || 0) + Number(stockOut || 0);
+  warehouse.incomingStock = Number(warehouse.incomingStock || 0) + Number(stockIn || 0);
+  warehouse.outgoingStock = Number(warehouse.outgoingStock || 0) + Number(stockOut || 0);
+  warehouse.stockUnits = Math.max(Number(warehouse.stockUnits || 0) + Number(stockIn || 0) - Number(stockOut || 0), 0);
+  warehouse.usedCapacity = warehouse.stockUnits;
+  warehouse.availableStock = warehouse.stockUnits;
+  warehouse.inventoryValue = Math.max(Number(warehouse.inventoryValue || warehouse.stockValue || 0) + Number(valueIn || 0) - Number(valueOut || 0), 0);
+  warehouse.stockValue = warehouse.inventoryValue;
+  await warehouse.save();
+}
+
 exports.stockIn = asyncHandler(async (req, res) => {
-  const { itemType, stockId, quantity, remarks } = req.body;
+  const { itemType, stockId, quantity, destinationWarehouse, destinationLocation, remarks } = req.body;
   const amount = Number(quantity || 0);
   if (amount <= 0) throw new Error('Stock in quantity is required');
   const Model = await getStockModel(itemType);
-  const stock = await Model.findById(stockId);
-  if (!stock) throw new Error('Stock item not found');
+  const sourceStock = await Model.findById(stockId);
+  if (!sourceStock) throw new Error('Stock item not found');
+  const warehouseId = destinationWarehouse || sourceStock.warehouse;
+  if (!warehouseId) throw new Error('Destination warehouse is required');
+  const locationId = destinationLocation || undefined;
+  const identity = stockIdentity(sourceStock, itemType);
+  const stockFilter = itemType === 'FINISHED_GOOD'
+    ? { sku: sourceStock.sku, warehouse: warehouseId, location: locationId }
+    : { materialName: sourceStock.materialName, category: sourceStock.category, warehouse: warehouseId, location: locationId };
+
+  const stock = await Model.findOneAndUpdate(
+    stockFilter,
+    {
+      $setOnInsert: {
+        ...identity,
+        warehouse: warehouseId,
+        location: locationId,
+        unit: sourceStock.unit,
+        unitCost: sourceStock.unitCost,
+        reorderLevel: sourceStock.reorderLevel,
+        sellingPrice: sourceStock.sellingPrice
+      }
+    },
+    { new: true, upsert: true }
+  );
 
   stock.availableQuantity += amount;
   if (stock.totalQuantity != null) stock.totalQuantity += amount;
+  if (itemType === 'RAW_MATERIAL') stock.totalValue = Number(stock.totalValue || 0) + (amount * Number(stock.unitCost || 0));
   stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
   await stock.save();
 
@@ -323,13 +364,18 @@ exports.stockIn = asyncHandler(async (req, res) => {
     referenceId: String(stock._id),
     materialId: itemType === 'RAW_MATERIAL' ? stock.materialName : undefined,
     sku: itemType === 'FINISHED_GOOD' ? stock.sku : undefined,
-    warehouseId: stock.warehouse,
-    locationId: stock.location,
+    warehouseId,
+    locationId,
     quantityIn: amount,
     balanceAfter: stock.availableQuantity,
     unitCost: stock.unitCost,
     totalValue: amount * Number(stock.unitCost || 0),
     remarks
+  });
+
+  await updateWarehouseCapacity(warehouseId, {
+    stockIn: amount,
+    valueIn: amount * Number(stock.unitCost || 0)
   });
 
   ok(res, stock, 'Stock in posted');

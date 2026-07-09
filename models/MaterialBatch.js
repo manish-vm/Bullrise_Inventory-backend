@@ -10,6 +10,9 @@ const materialBatchSchema = new mongoose.Schema({
   location: { type: mongoose.Schema.Types.ObjectId, ref: 'WarehouseLocation' },
   grn: { type: mongoose.Schema.Types.ObjectId, ref: 'GoodReceipt' },
   poNumber: String,
+  manufacturingDate: Date,
+  expiryDate: Date,
+  fifoPosition: { type: Number, default: 0 },
   quantityReceived: { type: Number, default: 0 },
   acceptedQuantity: { type: Number, default: 0 },
   rejectedQuantity: { type: Number, default: 0 },
@@ -21,5 +24,8 @@ const materialBatchSchema = new mongoose.Schema({
   totalValue: { type: Number, default: 0 },
   status: { type: String, enum: ['Available', 'Reserved', 'Consumed', 'Rejected'], default: 'Available' }
 }, { timestamps: true });
+
+materialBatchSchema.index({ materialName: 1, warehouse: 1, createdAt: 1 });
+materialBatchSchema.index({ status: 1, availableQuantity: 1 });
 
 module.exports = mongoose.model('MaterialBatch', materialBatchSchema);

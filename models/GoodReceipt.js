@@ -29,6 +29,11 @@ const goodReceiptSchema = new mongoose.Schema({
   receivedBy: String,
   qcInspector: String,
   receiptValue: { type: Number, default: 0 },
+  warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse' },
+  invoiceNumber: String,
+  vehicleNumber: String,
+  batchNumber: String,
+  inspectionStatus: { type: String, enum: ['Pending', 'Accepted', 'Rejected', 'Partial'], default: 'Pending' },
   items: [goodReceiptItemSchema],
   stockPosted: { type: Boolean, default: false },
   transferStatus: { type: String, enum: ['Not Transferred', 'Ready To Transfer', 'Transferred'], default: 'Not Transferred' },
@@ -39,5 +44,8 @@ const goodReceiptSchema = new mongoose.Schema({
   approvalRemarks: String,
   status: { type: String, enum: ['Completed', 'Under QC', 'Pending', 'Rejected'], default: 'Pending' }
 }, { timestamps: true });
+
+goodReceiptSchema.index({ supplier: 1, receiptDate: -1 });
+goodReceiptSchema.index({ poNumber: 1, status: 1 });
 
 module.exports = mongoose.model('GoodReceipt', goodReceiptSchema);

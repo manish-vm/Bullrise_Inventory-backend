@@ -19,6 +19,21 @@ const normalizeUnit = (unit, fallback = 'm') => {
   const value = String(unit || '').trim();
   return validMaterialCategoryUnits.has(value) ? value : fallback;
 };
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const nameRegex = (value) => {
+  const normalized = String(value || '').trim().replace(/s$/i, '');
+  return normalized ? new RegExp(`^${escapeRegex(normalized)}s?$`, 'i') : null;
+};
+
+function rawMaterialStockFilter({ materialName, category } = {}) {
+  const names = [materialName, category].filter(Boolean);
+  const clauses = [];
+  names.forEach((name) => {
+    const regex = nameRegex(name);
+    if (regex) clauses.push({ materialName: regex }, { category: regex });
+  });
+  return clauses.length ? { $or: clauses } : {};
+}
 
 async function defaultWarehouse(kind) {
   const patterns = kind === 'FINISHED_GOOD'
@@ -167,53 +182,61 @@ async function receiveRawMaterialFromGRN(receipt) {
 }
 
 async function reserveRawMaterial({ materialName, category, quantity, referenceType, referenceId, remarks }) {
-  const conditions = [];
-  if (materialName && category) conditions.push({ materialName, category });
-  if (materialName) conditions.push({ materialName });
-  if (category) conditions.push({ category });
-
-  const stock = await RawMaterialStock.findOne(conditions.length ? { $or: conditions } : {}).sort({ availableQuantity: -1 });
-  if (!stock || stock.availableQuantity < quantity) {
-    const available = Number(stock?.availableQuantity || 0);
+  let remaining = Number(quantity || 0);
+  const stocks = await RawMaterialStock.find(rawMaterialStockFilter({ materialName, category })).sort({ availableQuantity: -1 });
+  const available = stocks.reduce((total, stock) => total + Number(stock.availableQuantity || 0), 0);
+  if (available < remaining) {
     const label = materialName || category || 'raw material';
     throw new Error(`Insufficient raw material stock for ${label}. Required ${quantity}, available ${available}.`);
   }
 
-  stock.availableQuantity -= quantity;
-  stock.reservedQuantity += quantity;
-  stock.totalValue = Math.max(Number(stock.totalValue || 0) - (quantity * Number(stock.unitCost || 0)), 0);
-  stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
-  await stock.save();
+  const reservedStocks = [];
+  for (const stock of stocks) {
+    if (remaining <= 0) break;
+    const reserveQty = Math.min(Number(stock.availableQuantity || 0), remaining);
+    if (reserveQty <= 0) continue;
+
+    stock.availableQuantity -= reserveQty;
+    stock.reservedQuantity += reserveQty;
+    stock.totalValue = Math.max(Number(stock.totalValue || 0) - (reserveQty * Number(stock.unitCost || 0)), 0);
+    stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
+    await stock.save();
+    reservedStocks.push(stock);
+    remaining -= reserveQty;
+
+    await createMovement({
+      movementType: 'MATERIAL_RESERVED',
+      itemType: 'RAW_MATERIAL',
+      referenceType,
+      referenceId,
+      materialId: materialName || category,
+      warehouseId: stock.warehouse,
+      locationId: stock.location,
+      quantityOut: reserveQty,
+      balanceAfter: stock.availableQuantity,
+      unitCost: stock.unitCost,
+      totalValue: reserveQty * stock.unitCost,
+      remarks
+    });
+  }
 
   const names = [materialName, category].filter(Boolean);
-  const materialItem = await MaterialCategory.findOne({ name: { $in: names } });
+  const materialItem = await MaterialCategory.findOne(names.length ? { $or: names.map((name) => ({ name: nameRegex(name) })) } : {});
   if (materialItem) {
-    materialItem.totalMaterials = stock.availableQuantity;
-    materialItem.unit = stock.unit || materialItem.unit;
+    const categoryStocks = await RawMaterialStock.find(rawMaterialStockFilter({ materialName: materialItem.name, category: materialItem.name }));
+    materialItem.totalMaterials = categoryStocks.reduce((total, stock) => total + Number(stock.availableQuantity || 0), 0);
+    materialItem.unit = reservedStocks[0]?.unit || materialItem.unit;
     await materialItem.save();
   } else {
-    const categoryRow = await ProductCategory.findOne({ name: { $in: names } });
+    const categoryRow = await ProductCategory.findOne(names.length ? { $or: names.map((name) => ({ name: nameRegex(name) })) } : {});
     if (categoryRow) {
-      categoryRow.products = stock.availableQuantity;
+      const categoryStocks = await RawMaterialStock.find(rawMaterialStockFilter({ materialName: categoryRow.name, category: categoryRow.name }));
+      categoryRow.products = categoryStocks.reduce((total, stock) => total + Number(stock.availableQuantity || 0), 0);
       await categoryRow.save();
     }
   }
 
-  await createMovement({
-    movementType: 'MATERIAL_RESERVED',
-    itemType: 'RAW_MATERIAL',
-    referenceType,
-    referenceId,
-    materialId: materialName,
-    warehouseId: stock.warehouse,
-    quantityOut: quantity,
-    balanceAfter: stock.availableQuantity,
-    unitCost: stock.unitCost,
-    totalValue: quantity * stock.unitCost,
-    remarks
-  });
-
-  return stock;
+  return reservedStocks;
 }
 
 async function postFinishedGoods({ product, variant, productName, sku, barcode, size, color, quantity, warehouse, unitCost = 0, sellingPrice = 0, referenceType, referenceId, remarks }) {
@@ -267,5 +290,6 @@ module.exports = {
   receiveRawMaterialFromGRN,
   reserveRawMaterial,
   postFinishedGoods,
-  statusFor
+  statusFor,
+  rawMaterialStockFilter
 };
