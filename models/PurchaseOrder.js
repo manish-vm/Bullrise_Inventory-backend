@@ -34,7 +34,7 @@ const purchaseOrderSchema = new mongoose.Schema({
   items: [purchaseOrderItemSchema]
 }, { timestamps: true });
 
-purchaseOrderSchema.pre('validate', function calculatePoBalances(next) {
+purchaseOrderSchema.pre('validate', function calculatePoBalances() {
   this.items = (this.items || []).map((item) => {
     const ordered = Number(item.quantity || 0);
     const received = Number(item.receivedQuantity || 0);
@@ -57,7 +57,6 @@ purchaseOrderSchema.pre('validate', function calculatePoBalances(next) {
     else if (this.receivedQuantity < this.orderedQuantity) this.status = 'Partially Received';
     else this.status = 'Completed';
   }
-  next();
 });
 
 purchaseOrderSchema.index({ status: 1, expectedDate: 1 });

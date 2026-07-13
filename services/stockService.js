@@ -54,8 +54,8 @@ async function defaultWarehouse(kind) {
   return activeWarehouse || Warehouse.findOne().sort({ code: 1 });
 }
 
-async function createMovement(payload) {
-  return StockMovement.create({
+async function createMovement(payload, options = {}) {
+  const movement = new StockMovement({
     quantityIn: 0,
     quantityOut: 0,
     balanceAfter: 0,
@@ -63,6 +63,25 @@ async function createMovement(payload) {
     totalValue: 0,
     ...payload
   });
+  return movement.save(options.session ? { session: options.session } : undefined);
+}
+
+async function updateWarehouseCapacity(warehouseId, { stockIn = 0, stockOut = 0, valueIn = 0, valueOut = 0 } = {}, options = {}) {
+  if (!warehouseId) return null;
+  const warehouse = await Warehouse.findById(warehouseId).session(options.session || null);
+  if (!warehouse) return null;
+
+  warehouse.stockInUnits = Number(warehouse.stockInUnits || 0) + Number(stockIn || 0);
+  warehouse.stockOutUnits = Number(warehouse.stockOutUnits || 0) + Number(stockOut || 0);
+  warehouse.incomingStock = Number(warehouse.incomingStock || 0) + Number(stockIn || 0);
+  warehouse.outgoingStock = Number(warehouse.outgoingStock || 0) + Number(stockOut || 0);
+  warehouse.stockUnits = Math.max(Number(warehouse.stockUnits || 0) + Number(stockIn || 0) - Number(stockOut || 0), 0);
+  warehouse.usedCapacity = warehouse.stockUnits;
+  warehouse.availableStock = warehouse.stockUnits;
+  warehouse.inventoryValue = Math.max(Number(warehouse.inventoryValue || warehouse.stockValue || 0) + Number(valueIn || 0) - Number(valueOut || 0), 0);
+  warehouse.stockValue = warehouse.inventoryValue;
+  await warehouse.save(options.session ? { session: options.session } : undefined);
+  return warehouse;
 }
 
 async function receiveRawMaterialFromGRN(receipt) {
@@ -287,6 +306,7 @@ async function postFinishedGoods({ product, variant, productName, sku, barcode, 
 
 module.exports = {
   createMovement,
+  updateWarehouseCapacity,
   receiveRawMaterialFromGRN,
   reserveRawMaterial,
   postFinishedGoods,
