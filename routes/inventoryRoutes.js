@@ -5,6 +5,7 @@ const v = require('../validation/schemas');
 
 router.get('/raw-material-stock/stats', c.rawMaterialStats);
 router.get('/raw-material-stock', c.listRawMaterialStock);
+router.post('/raw-material-stock/repair-completed-grns', c.repairCompletedGrnStock);
 router.get('/material-batches', c.listBatches);
 router.get('/stock-movements/stats', c.movementStats);
 router.get('/stock-movements/:id', c.getMovement);

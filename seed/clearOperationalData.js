@@ -13,6 +13,7 @@ const JobCard = require('../models/JobCard');
 const ManufacturingWorkOrder = require('../models/ManufacturingWorkOrder');
 const MaterialBatch = require('../models/MaterialBatch');
 const MaterialCategory = require('../models/MaterialCategory');
+const MaterialRequest = require('../models/MaterialRequest');
 const Product = require('../models/Product');
 const ProductAttribute = require('../models/ProductAttribute');
 const ProductCategory = require('../models/ProductCategory');
@@ -25,12 +26,14 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const QCInspection = require('../models/QCInspection');
 const RawMaterialStock = require('../models/RawMaterialStock');
 const SalesOrder = require('../models/SalesOrder');
+const SerialInventory = require('../models/SerialInventory');
 const SKU = require('../models/SKU');
 const StockMovement = require('../models/StockMovement');
 const StockReturn = require('../models/StockReturn');
 const Supplier = require('../models/Supplier');
 const Warehouse = require('../models/Warehouse');
 const WarehouseLocation = require('../models/WarehouseLocation');
+const WarehouseTransfer = require('../models/WarehouseTransfer');
 
 const collectionsToClear = [
   Activity,
@@ -43,6 +46,7 @@ const collectionsToClear = [
   ManufacturingWorkOrder,
   MaterialBatch,
   MaterialCategory,
+  MaterialRequest,
   Product,
   ProductAttribute,
   ProductCategory,
@@ -55,12 +59,14 @@ const collectionsToClear = [
   QCInspection,
   RawMaterialStock,
   SalesOrder,
+  SerialInventory,
   SKU,
   StockMovement,
   StockReturn,
   Supplier,
   Warehouse,
-  WarehouseLocation
+  WarehouseLocation,
+  WarehouseTransfer
 ];
 
 async function clearOperationalData() {

@@ -60,30 +60,43 @@ exports.getPurchaseOrders = asyncHandler(async (req, res) => {
   const total = await PurchaseOrder.countDocuments(filter);
   ok(res, { items, total, page: Number(page), pages: Math.ceil(total / Number(limit)) });
 });
-exports.createPurchaseOrder = asyncHandler(async (req, res) => {
-  const supplier = await Supplier.findById(req.body.supplier);
-  const payload = { ...req.body, supplierName: req.body.supplierName || supplier?.name };
-  const requestedPoNumber = String(payload.poNumber || '').trim();
-  payload.poNumber = requestedPoNumber && requestedPoNumber !== 'Auto Generate' ? requestedPoNumber : await nextPurchaseOrderNumber();
-  payload.creditDays = payload.paymentMode === 'Cash' ? 0 : Number(payload.creditDays || 30);
-  if (req.body.orderedQuantity != null && payload.items?.length === 1) {
-    payload.items[0].quantity = Number(req.body.orderedQuantity || 0);
+exports.createPurchaseOrder = async (req, res) => {
+  try {
+    const supplier = await Supplier.findById(req.body.supplier);
+    if (!supplier) {
+      res.status(400);
+      throw new Error('Select a valid supplier before creating the purchase order');
+    }
+    const payload = { ...req.body, supplierName: req.body.supplierName || supplier.name };
+    const requestedPoNumber = String(payload.poNumber || '').trim();
+    payload.poNumber = requestedPoNumber && requestedPoNumber !== 'Auto Generate' ? requestedPoNumber : await nextPurchaseOrderNumber();
+    payload.creditDays = payload.paymentMode === 'Cash' ? 0 : Number(payload.creditDays || 30);
+    if (req.body.orderedQuantity != null && payload.items?.length === 1) {
+      payload.items[0].quantity = Number(req.body.orderedQuantity || 0);
+    }
+    if (req.body.receivedQuantity != null && payload.items?.length === 1) {
+      payload.items[0].receivedQuantity = Number(req.body.receivedQuantity || 0);
+    }
+    payload.items = normalizeItems(payload.items || []).filter((item) => item.materialName || item.category || item.quantity > 0);
+    if (!payload.items.length) {
+      res.status(400);
+      throw new Error('Add at least one product or raw material item before creating the purchase order');
+    }
+    payload.orderedQuantity = payload.orderedQuantity || payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    if (payload.items.length) {
+      payload.category = payload.items[0].category || payload.items[0].materialName || payload.category;
+      payload.unit = payload.items[0].unit || payload.unit;
+      payload.receivedQuantity = payload.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
+      payload.totalAmount = payload.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    }
+    const po = await PurchaseOrder.create(payload);
+    await Activity.create({ module: 'purchase-orders', title: `${po.poNumber} created`, description: new Date().toLocaleString(), type: 'success' });
+    created(res, po);
+  } catch (error) {
+    const statusCode = res.statusCode && res.statusCode !== 200 ? res.statusCode : error.code === 11000 ? 409 : error.name === 'ValidationError' ? 400 : 500;
+    res.status(statusCode).json({ success: false, message: error.message || 'Unable to create purchase order' });
   }
-  if (req.body.receivedQuantity != null && payload.items?.length === 1) {
-    payload.items[0].receivedQuantity = Number(req.body.receivedQuantity || 0);
-  }
-  payload.items = normalizeItems(payload.items || []);
-  payload.orderedQuantity = payload.orderedQuantity || payload.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
-  if (payload.items.length) {
-    payload.category = payload.items[0].category || payload.items[0].materialName || payload.category;
-    payload.unit = payload.items[0].unit || payload.unit;
-    payload.receivedQuantity = payload.items.reduce((sum, item) => sum + Number(item.receivedQuantity || 0), 0);
-    payload.totalAmount = payload.items.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  }
-  const po = await PurchaseOrder.create(payload);
-  await Activity.create({ module: 'purchase-orders', title: `${po.poNumber} created`, description: new Date().toLocaleString(), type: 'success' });
-  created(res, po);
-});
+};
 exports.getPurchaseOrder = asyncHandler(async (req, res) => ok(res, await PurchaseOrder.findById(req.params.id).populate('supplier')));
 exports.updatePurchaseOrder = asyncHandler(async (req, res) => {
   const po = await PurchaseOrder.findById(req.params.id);

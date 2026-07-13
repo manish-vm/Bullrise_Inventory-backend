@@ -2,6 +2,8 @@ const router = require('express').Router();
 const c = require('../controllers/enterpriseInventoryController');
 
 router.get('/analytics', c.analytics);
+router.get('/alerts', c.alerts);
+router.get('/reorder-suggestions', c.reorderSuggestions);
 router.get('/vendors/performance', c.vendorPerformance);
 router.get('/material-requests/stats', c.materialRequestStats);
 router.route('/material-requests').get(c.listMaterialRequests).post(c.createMaterialRequest);

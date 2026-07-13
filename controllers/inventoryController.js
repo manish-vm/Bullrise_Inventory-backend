@@ -1,4 +1,5 @@
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const RawMaterialStock = require('../models/RawMaterialStock');
 const MaterialBatch = require('../models/MaterialBatch');
 const StockMovement = require('../models/StockMovement');
@@ -9,7 +10,7 @@ const Warehouse = require('../models/Warehouse');
 const BarcodeLabel = require('../models/BarcodeLabel');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
-const { createMovement, receiveRawMaterialFromGRN, statusFor } = require('../services/stockService');
+const { createMovement, receiveRawMaterialFromGRN, statusFor, updateWarehouseCapacity } = require('../services/stockService');
 
 const pageParams = (query) => {
   const page = Number(query.page || 1);
@@ -73,8 +74,12 @@ async function postMissingCompletedGrns() {
   }));
 }
 
-exports.listRawMaterialStock = asyncHandler(async (req, res) => {
+exports.repairCompletedGrnStock = asyncHandler(async (req, res) => {
   await postMissingCompletedGrns();
+  ok(res, null, 'Completed GRNs repaired');
+});
+
+exports.listRawMaterialStock = asyncHandler(async (req, res) => {
   const { search = '', category, status, warehouse } = req.query;
   const { page, limit, skip } = pageParams(req.query);
   const filter = { $and: [postedRawMaterialStockFilter] };
@@ -92,7 +97,6 @@ exports.listRawMaterialStock = asyncHandler(async (req, res) => {
 });
 
 exports.rawMaterialStats = asyncHandler(async (req, res) => {
-  await postMissingCompletedGrns();
   const rows = await RawMaterialStock.find(postedRawMaterialStockFilter);
   await repairZeroValueRawMaterialStock(rows);
   ok(res, {
@@ -303,23 +307,6 @@ function stockIdentity(stock, itemType) {
   return { materialName: stock.materialName, category: stock.category, supplier: stock.supplier, supplierName: stock.supplierName, unit: stock.unit };
 }
 
-async function updateWarehouseCapacity(warehouseId, { stockIn = 0, stockOut = 0, valueIn = 0, valueOut = 0 } = {}) {
-  if (!warehouseId) return;
-  const warehouse = await Warehouse.findById(warehouseId);
-  if (!warehouse) return;
-
-  warehouse.stockInUnits = Number(warehouse.stockInUnits || 0) + Number(stockIn || 0);
-  warehouse.stockOutUnits = Number(warehouse.stockOutUnits || 0) + Number(stockOut || 0);
-  warehouse.incomingStock = Number(warehouse.incomingStock || 0) + Number(stockIn || 0);
-  warehouse.outgoingStock = Number(warehouse.outgoingStock || 0) + Number(stockOut || 0);
-  warehouse.stockUnits = Math.max(Number(warehouse.stockUnits || 0) + Number(stockIn || 0) - Number(stockOut || 0), 0);
-  warehouse.usedCapacity = warehouse.stockUnits;
-  warehouse.availableStock = warehouse.stockUnits;
-  warehouse.inventoryValue = Math.max(Number(warehouse.inventoryValue || warehouse.stockValue || 0) + Number(valueIn || 0) - Number(valueOut || 0), 0);
-  warehouse.stockValue = warehouse.inventoryValue;
-  await warehouse.save();
-}
-
 exports.stockIn = asyncHandler(async (req, res) => {
   const { itemType, stockId, quantity, destinationWarehouse, destinationLocation, remarks } = req.body;
   const amount = Number(quantity || 0);
@@ -420,74 +407,84 @@ exports.transferStock = asyncHandler(async (req, res) => {
   if (amount <= 0) throw new Error('Transfer quantity is required');
   if (!destinationWarehouse) throw new Error('Destination warehouse is required');
 
-  const Model = await getStockModel(itemType);
-  const source = await Model.findById(stockId);
-  if (!source) throw new Error('Source stock item not found');
-  if (source.availableQuantity < amount) throw new Error('Insufficient stock for transfer');
+  const session = await mongoose.startSession();
+  let result;
+  try {
+    await session.withTransaction(async () => {
+      const Model = await getStockModel(itemType);
+      const source = await Model.findById(stockId).session(session);
+      if (!source) throw new Error('Source stock item not found');
+      if (source.availableQuantity < amount) throw new Error('Insufficient stock for transfer');
 
-  source.availableQuantity -= amount;
-  if (source.totalQuantity != null) source.totalQuantity -= amount;
-  source.status = statusFor(source.availableQuantity, source.reorderLevel);
-  await source.save();
+      source.availableQuantity -= amount;
+      if (source.totalQuantity != null) source.totalQuantity -= amount;
+      source.status = statusFor(source.availableQuantity, source.reorderLevel);
+      await source.save({ session });
 
-  const identity = stockIdentity(source, itemType);
-  const destFilter = itemType === 'FINISHED_GOOD'
-    ? { sku: source.sku, warehouse: destinationWarehouse, location: destinationLocation || undefined }
-    : { materialName: source.materialName, category: source.category, warehouse: destinationWarehouse, location: destinationLocation || undefined };
+      const identity = stockIdentity(source, itemType);
+      const destFilter = itemType === 'FINISHED_GOOD'
+        ? { sku: source.sku, warehouse: destinationWarehouse, location: destinationLocation || undefined }
+        : { materialName: source.materialName, category: source.category, warehouse: destinationWarehouse, location: destinationLocation || undefined };
 
-  const destination = await Model.findOneAndUpdate(
-    destFilter,
-    {
-      $setOnInsert: {
-        ...identity,
-        warehouse: destinationWarehouse,
-        location: destinationLocation,
-        unit: source.unit,
+      const destination = await Model.findOneAndUpdate(
+        destFilter,
+        {
+          $setOnInsert: {
+            ...identity,
+            warehouse: destinationWarehouse,
+            location: destinationLocation,
+            unit: source.unit,
+            unitCost: source.unitCost,
+            reorderLevel: source.reorderLevel
+          },
+          $inc: {
+            availableQuantity: amount,
+            totalQuantity: itemType === 'FINISHED_GOOD' ? amount : 0,
+            totalValue: itemType === 'RAW_MATERIAL' ? amount * Number(source.unitCost || 0) : 0
+          }
+        },
+        { new: true, upsert: true, session }
+      );
+      destination.status = statusFor(destination.availableQuantity, destination.reorderLevel);
+      await destination.save({ session });
+
+      await createMovement({
+        movementType: 'TRANSFER_OUT',
+        itemType,
+        referenceType: 'StockTransfer',
+        referenceId: String(source._id),
+        materialId: itemType === 'RAW_MATERIAL' ? source.materialName : undefined,
+        sku: itemType === 'FINISHED_GOOD' ? source.sku : undefined,
+        warehouseId: source.warehouse,
+        locationId: source.location,
+        quantityOut: amount,
+        balanceAfter: source.availableQuantity,
         unitCost: source.unitCost,
-        reorderLevel: source.reorderLevel
-      },
-      $inc: {
-        availableQuantity: amount,
-        totalQuantity: itemType === 'FINISHED_GOOD' ? amount : 0,
-        totalValue: itemType === 'RAW_MATERIAL' ? amount * Number(source.unitCost || 0) : 0
-      }
-    },
-    { new: true, upsert: true }
-  );
-  destination.status = statusFor(destination.availableQuantity, destination.reorderLevel);
-  await destination.save();
+        totalValue: amount * Number(source.unitCost || 0),
+        remarks
+      }, { session });
 
-  await createMovement({
-    movementType: 'TRANSFER_OUT',
-    itemType,
-    referenceType: 'StockTransfer',
-    referenceId: String(source._id),
-    materialId: itemType === 'RAW_MATERIAL' ? source.materialName : undefined,
-    sku: itemType === 'FINISHED_GOOD' ? source.sku : undefined,
-    warehouseId: source.warehouse,
-    locationId: source.location,
-    quantityOut: amount,
-    balanceAfter: source.availableQuantity,
-    unitCost: source.unitCost,
-    totalValue: amount * Number(source.unitCost || 0),
-    remarks
-  });
+      await createMovement({
+        movementType: 'TRANSFER_IN',
+        itemType,
+        referenceType: 'StockTransfer',
+        referenceId: String(destination._id),
+        materialId: itemType === 'RAW_MATERIAL' ? destination.materialName : undefined,
+        sku: itemType === 'FINISHED_GOOD' ? destination.sku : undefined,
+        warehouseId: destination.warehouse,
+        locationId: destination.location,
+        quantityIn: amount,
+        balanceAfter: destination.availableQuantity,
+        unitCost: destination.unitCost,
+        totalValue: amount * Number(destination.unitCost || 0),
+        remarks
+      }, { session });
 
-  await createMovement({
-    movementType: 'TRANSFER_IN',
-    itemType,
-    referenceType: 'StockTransfer',
-    referenceId: String(destination._id),
-    materialId: itemType === 'RAW_MATERIAL' ? destination.materialName : undefined,
-    sku: itemType === 'FINISHED_GOOD' ? destination.sku : undefined,
-    warehouseId: destination.warehouse,
-    locationId: destination.location,
-    quantityIn: amount,
-    balanceAfter: destination.availableQuantity,
-    unitCost: destination.unitCost,
-    totalValue: amount * Number(destination.unitCost || 0),
-    remarks
-  });
+      result = { source, destination };
+    });
+  } finally {
+    session.endSession();
+  }
 
-  ok(res, { source, destination }, 'Stock transferred');
+  ok(res, result, 'Stock transferred');
 });

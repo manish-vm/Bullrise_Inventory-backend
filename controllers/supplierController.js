@@ -20,12 +20,15 @@ function withOrderCount(supplier, counts) {
   return { ...item, ordersCount: counts[String(item._id)] || 0 };
 }
 
+const splitCategories = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 exports.getSuppliers = asyncHandler(async (req, res) => {
   const { search = '', status, category, city, page = 1, limit = 10 } = req.query;
   const filter = {};
   if (search) filter.$or = [{ name: new RegExp(search, 'i') }, { supplierCode: new RegExp(search, 'i') }, { contactPerson: new RegExp(search, 'i') }];
   if (status && status !== 'All Status') filter.status = status;
-  if (category && category !== 'All Categories') filter.category = category;
+  if (category && !['All Categories', 'All Raw Material Items'].includes(category)) filter.category = new RegExp(`(^|,\\s*)${escapeRegex(category)}(\\s*,|$)`, 'i');
   if (city && city !== 'All Cities') filter.city = city;
   const skip = (Number(page) - 1) * Number(limit);
   const [items, total, orderCounts] = await Promise.all([
@@ -66,8 +69,10 @@ exports.getSupplierStats = asyncHandler(async (req, res) => {
   ]);
   const rows = suppliers.map((supplier) => withOrderCount(supplier, orderCounts));
   const byCategory = Object.values(rows.reduce((acc, s) => {
-    acc[s.category] ||= { label: s.category, value: 0 };
-    acc[s.category].value += 1;
+    splitCategories(s.category).forEach((category) => {
+      acc[category] ||= { label: category, value: 0 };
+      acc[category].value += 1;
+    });
     return acc;
   }, {}));
   const top = rows.sort((a, b) => b.ordersCount - a.ordersCount).slice(0, 5).map(s => ({ name: s.name, value: `${s.ordersCount} Orders` }));

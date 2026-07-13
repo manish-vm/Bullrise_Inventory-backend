@@ -1,4 +1,5 @@
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const Supplier = require('../models/Supplier');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const GoodReceipt = require('../models/GoodReceipt');
@@ -21,8 +22,12 @@ const pageParams = (query) => {
 
 const sum = (rows, field) => rows.reduce((total, row) => total + Number(row[field] || 0), 0);
 const ageDays = (date) => Math.max(0, Math.floor((Date.now() - new Date(date).getTime()) / 86400000));
-const healthLabel = (score) => (score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Average' : 'Critical');
+const healthLabel = (score, hasInventoryData = true) => {
+  if (!hasInventoryData) return 'No Data';
+  return score >= 85 ? 'Excellent' : score >= 70 ? 'Good' : score >= 50 ? 'Average' : 'Critical';
+};
 const turnoverStatus = (ratio) => (ratio >= 6 ? 'Fast Moving' : ratio >= 3 ? 'Healthy' : ratio >= 1 ? 'Slow' : 'Dead Stock');
+const stockValue = (row) => Number(row.availableQuantity || 0) * Number(row.unitCost || row.sellingPrice || 0);
 
 async function nextNumber(prefix, Model, field) {
   const last = await Model.findOne({ [field]: new RegExp(`^${prefix}-`) }).sort({ createdAt: -1 });
@@ -50,14 +55,14 @@ function normalizeRequestQuantities(payload) {
   };
 }
 
-async function consumeFifo({ materialName, category, quantity, warehouse, referenceId, remarks, user }) {
+async function consumeFifo({ materialName, category, quantity, warehouse, referenceId, remarks, user, session }) {
   let remaining = Number(quantity || 0);
   const batches = await MaterialBatch.find({
     availableQuantity: { $gt: 0 },
     ...(materialName ? { materialName } : {}),
     ...(category ? { category } : {}),
     ...(warehouse ? { warehouse } : {})
-  }).sort({ createdAt: 1, _id: 1 });
+  }).sort({ createdAt: 1, _id: 1 }).session(session || null);
 
   const available = batches.reduce((total, batch) => total + Number(batch.availableQuantity || 0), 0);
   if (available < remaining) throw new Error(`Insufficient FIFO stock for ${materialName || category}. Required ${remaining}, available ${available}.`);
@@ -70,7 +75,7 @@ async function consumeFifo({ materialName, category, quantity, warehouse, refere
     batch.consumedQuantity += take;
     batch.totalValue = batch.availableQuantity * Number(batch.unitCost || 0);
     batch.status = batch.availableQuantity > 0 ? 'Available' : 'Consumed';
-    await batch.save();
+    await batch.save(session ? { session } : undefined);
     remaining -= take;
     consumed.push({ batchNo: batch.batchNo, quantity: take, unitCost: batch.unitCost });
 
@@ -88,20 +93,20 @@ async function consumeFifo({ materialName, category, quantity, warehouse, refere
       totalValue: take * Number(batch.unitCost || 0),
       remarks,
       createdBy: user || 'System'
-    });
+    }, session ? { session } : undefined);
   }
 
   const stock = await RawMaterialStock.findOne({
     ...(materialName ? { materialName } : {}),
     ...(category ? { category } : {}),
     ...(warehouse ? { warehouse } : {})
-  }).sort({ availableQuantity: -1 });
+  }).sort({ availableQuantity: -1 }).session(session || null);
   if (stock) {
     stock.availableQuantity = Math.max(Number(stock.availableQuantity || 0) - Number(quantity || 0), 0);
     stock.consumedQuantity = Number(stock.consumedQuantity || 0) + Number(quantity || 0);
     stock.totalValue = Math.max(Number(stock.totalValue || 0) - consumed.reduce((total, row) => total + (row.quantity * Number(row.unitCost || 0)), 0), 0);
     stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
-    await stock.save();
+    await stock.save(session ? { session } : undefined);
   }
 
   return consumed;
@@ -135,7 +140,141 @@ exports.vendorPerformance = asyncHandler(async (req, res) => {
       averageDeliveryTimeDays: supplier.averageDeliveryTimeDays,
       averageQualityScore: accepted + rejected > 0 ? Math.round((accepted / (accepted + rejected)) * 100) : supplier.averageQualityScore
     };
+}));
+});
+
+exports.alerts = asyncHandler(async (req, res) => {
+  const [raw, finished, batches, transfers, requests] = await Promise.all([
+    RawMaterialStock.find().populate('warehouse'),
+    FinishedGoodsStock.find().populate('warehouse'),
+    MaterialBatch.find().populate('warehouse'),
+    WarehouseTransfer.find({ status: { $in: ['Pending', 'Transit'] } }).populate('fromWarehouse toWarehouse').sort('-createdAt').limit(20),
+    MaterialRequest.find({ status: { $in: ['Pending', 'Approved', 'Partially Issued'] } }).populate('warehouse').sort('-createdAt').limit(20)
+  ]);
+
+  const alerts = [
+    ...raw.filter((row) => Number(row.availableQuantity || 0) <= Number(row.reorderLevel || 0)).map((row) => ({
+      type: 'Low Raw Material',
+      itemType: 'RAW_MATERIAL',
+      item: row.materialName,
+      warehouse: row.warehouse?.name,
+      currentQuantity: row.availableQuantity,
+      reorderLevel: row.reorderLevel,
+      severity: Number(row.availableQuantity || 0) <= 0 ? 'critical' : 'warning',
+      message: `${row.materialName} is at or below reorder level`
+    })),
+    ...finished.filter((row) => Number(row.availableQuantity || 0) <= Number(row.reorderLevel || 0)).map((row) => ({
+      type: 'Low Finished Good',
+      itemType: 'FINISHED_GOOD',
+      item: row.sku,
+      productName: row.productName,
+      warehouse: row.warehouse?.name,
+      currentQuantity: row.availableQuantity,
+      reorderLevel: row.reorderLevel,
+      severity: Number(row.availableQuantity || 0) <= 0 ? 'critical' : 'warning',
+      message: `${row.sku} is at or below reorder level`
+    })),
+    ...raw.filter((row) => Number(row.availableQuantity || 0) < 0).map((row) => ({
+      type: 'Negative Stock',
+      itemType: 'RAW_MATERIAL',
+      item: row.materialName,
+      warehouse: row.warehouse?.name,
+      currentQuantity: row.availableQuantity,
+      severity: 'critical',
+      message: `${row.materialName} has negative stock`
+    })),
+    ...batches.filter((row) => Number(row.availableQuantity || 0) > 0 && ageDays(row.updatedAt) >= 180).slice(0, 20).map((row) => ({
+      type: 'Dead Stock',
+      itemType: 'RAW_MATERIAL',
+      item: row.materialName,
+      batchNo: row.batchNo,
+      warehouse: row.warehouse?.name,
+      currentQuantity: row.availableQuantity,
+      valueLocked: stockValue(row),
+      severity: 'critical',
+      message: `${row.batchNo} has no movement for 180+ days`
+    })),
+    ...transfers.map((row) => ({
+      type: 'Pending Transfer',
+      transferNumber: row.transferNumber,
+      fromWarehouse: row.fromWarehouse?.name,
+      toWarehouse: row.toWarehouse?.name,
+      currentQuantity: row.quantity,
+      severity: row.status === 'Transit' && ageDays(row.sentAt || row.updatedAt) > 3 ? 'warning' : 'info',
+      message: `${row.transferNumber} is ${row.status.toLowerCase()}`
+    })),
+    ...requests.map((row) => ({
+      type: 'Pending Material Request',
+      requestNumber: row.mrnNumber,
+      department: row.department,
+      warehouse: row.warehouse?.name,
+      currentQuantity: row.remainingQuantity,
+      severity: row.priority === 'Urgent' ? 'critical' : row.priority === 'High' ? 'warning' : 'info',
+      message: `${row.mrnNumber} has ${row.remainingQuantity} units pending`
+    }))
+  ];
+
+  ok(res, alerts.sort((a, b) => {
+    const rank = { critical: 0, warning: 1, info: 2 };
+    return (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3);
   }));
+});
+
+exports.reorderSuggestions = asyncHandler(async (req, res) => {
+  const [raw, finished, movements] = await Promise.all([
+    RawMaterialStock.find().populate('warehouse supplier'),
+    FinishedGoodsStock.find().populate('warehouse'),
+    StockMovement.find({ createdAt: { $gte: new Date(Date.now() - 90 * 86400000) } })
+  ]);
+
+  const usageByKey = movements.reduce((map, row) => {
+    const key = row.sku || row.materialId;
+    if (!key) return map;
+    map[key] = (map[key] || 0) + Number(row.quantityOut || 0);
+    return map;
+  }, {});
+
+  const rawSuggestions = raw
+    .filter((row) => Number(row.availableQuantity || 0) <= Number(row.reorderLevel || 0))
+    .map((row) => {
+      const avgDailyUsage = Number(usageByKey[row.materialName] || 0) / 90;
+      const safetyStock = Math.max(Number(row.reorderLevel || 0), Math.ceil(avgDailyUsage * 14));
+      const targetStock = Math.max(safetyStock * 2, Math.ceil(avgDailyUsage * 30));
+      return {
+        itemType: 'RAW_MATERIAL',
+        materialName: row.materialName,
+        category: row.category,
+        warehouse: row.warehouse?.name,
+        supplier: row.supplier?.name || row.supplierName,
+        currentQuantity: row.availableQuantity,
+        reorderLevel: row.reorderLevel,
+        avgDailyUsage: Number(avgDailyUsage.toFixed(2)),
+        suggestedQuantity: Math.max(targetStock - Number(row.availableQuantity || 0), 0),
+        estimatedValue: Math.max(targetStock - Number(row.availableQuantity || 0), 0) * Number(row.unitCost || 0),
+        priority: Number(row.availableQuantity || 0) <= 0 ? 'Urgent' : 'Normal'
+      };
+    });
+
+  const finishedSuggestions = finished
+    .filter((row) => Number(row.availableQuantity || 0) <= Number(row.reorderLevel || 0))
+    .map((row) => {
+      const avgDailyUsage = Number(usageByKey[row.sku] || 0) / 90;
+      const targetStock = Math.max(Number(row.reorderLevel || 0) * 2, Math.ceil(avgDailyUsage * 30));
+      return {
+        itemType: 'FINISHED_GOOD',
+        sku: row.sku,
+        productName: row.productName,
+        warehouse: row.warehouse?.name,
+        currentQuantity: row.availableQuantity,
+        reorderLevel: row.reorderLevel,
+        avgDailyUsage: Number(avgDailyUsage.toFixed(2)),
+        suggestedQuantity: Math.max(targetStock - Number(row.availableQuantity || 0), 0),
+        estimatedValue: Math.max(targetStock - Number(row.availableQuantity || 0), 0) * Number(row.unitCost || 0),
+        priority: Number(row.availableQuantity || 0) <= 0 ? 'Urgent' : 'Normal'
+      };
+    });
+
+  ok(res, [...rawSuggestions, ...finishedSuggestions].sort((a, b) => b.suggestedQuantity - a.suggestedQuantity));
 });
 
 exports.listMaterialRequests = asyncHandler(async (req, res) => {
@@ -166,42 +305,52 @@ exports.approveMaterialRequest = asyncHandler(async (req, res) => {
 });
 
 exports.issueMaterialRequest = asyncHandler(async (req, res) => {
-  const item = await MaterialRequest.findById(req.params.id);
-  if (!item) throw new Error('Material request not found');
-  if (!['Approved', 'Partially Issued'].includes(item.status)) throw new Error('Material request must be approved before issue');
+  const session = await mongoose.startSession();
+  let saved;
+  try {
+    await session.withTransaction(async () => {
+      const item = await MaterialRequest.findById(req.params.id).session(session);
+      if (!item) throw new Error('Material request not found');
+      if (!['Approved', 'Partially Issued'].includes(item.status)) throw new Error('Material request must be approved before issue');
 
-  const minNumber = req.body.minNumber || await nextNumber('MIN', MaterialRequest, 'issues.minNumber');
-  const issueLines = [];
-  let totalValue = 0;
-  for (const line of item.items) {
-    const pending = Math.max(Number(line.requiredQuantity || 0) - Number(line.issuedQuantity || 0), 0);
-    const requestedIssue = Number((req.body.items || []).find((row) => row.materialName === line.materialName)?.issuedQuantity ?? pending);
-    const issueQty = Math.min(pending, requestedIssue);
-    if (issueQty <= 0) continue;
-    const batches = await consumeFifo({
-      materialName: line.materialName,
-      category: line.category,
-      quantity: issueQty,
-      warehouse: req.body.warehouse || item.warehouse,
-      referenceId: minNumber,
-      remarks: item.purpose,
-      user: req.user?.name
+      const minNumber = req.body.minNumber || await nextNumber('MIN', MaterialRequest, 'issues.minNumber');
+      const issueLines = [];
+      let totalValue = 0;
+      for (const line of item.items) {
+        const pending = Math.max(Number(line.requiredQuantity || 0) - Number(line.issuedQuantity || 0), 0);
+        const requestedIssue = Number((req.body.items || []).find((row) => row.materialName === line.materialName)?.issuedQuantity ?? pending);
+        const issueQty = Math.min(pending, requestedIssue);
+        if (issueQty <= 0) continue;
+        const batches = await consumeFifo({
+          materialName: line.materialName,
+          category: line.category,
+          quantity: issueQty,
+          warehouse: req.body.warehouse || item.warehouse,
+          referenceId: minNumber,
+          remarks: item.purpose,
+          user: req.user?.name,
+          session
+        });
+        const lineValue = batches.reduce((total, batch) => total + (batch.quantity * Number(batch.unitCost || 0)), 0);
+        totalValue += lineValue;
+        line.issuedQuantity = Number(line.issuedQuantity || 0) + issueQty;
+        line.remainingQuantity = Math.max(Number(line.requiredQuantity || 0) - line.issuedQuantity, 0);
+        line.issueStatus = line.remainingQuantity === 0 ? 'Issued' : 'Partially Issued';
+        issueLines.push({ materialName: line.materialName, requestedQuantity: line.requiredQuantity, issuedQuantity: issueQty, unit: line.unit, batches });
+      }
+
+      item.issuedQuantity = item.items.reduce((total, line) => total + Number(line.issuedQuantity || 0), 0);
+      item.remainingQuantity = item.items.reduce((total, line) => total + Number(line.remainingQuantity || 0), 0);
+      item.totalIssuedValue = Number(item.totalIssuedValue || 0) + totalValue;
+      item.status = item.remainingQuantity === 0 ? 'Issued' : 'Partially Issued';
+      item.issues.push({ minNumber, issuedBy: req.user?.name || 'System', issuedAt: new Date(), warehouse: req.body.warehouse || item.warehouse, items: issueLines, totalValue, remarks: req.body.remarks });
+      item.audit.push({ action: 'Issued', by: req.user?.name || 'System', remarks: minNumber });
+      saved = await item.save({ session });
     });
-    const lineValue = batches.reduce((total, batch) => total + (batch.quantity * Number(batch.unitCost || 0)), 0);
-    totalValue += lineValue;
-    line.issuedQuantity = Number(line.issuedQuantity || 0) + issueQty;
-    line.remainingQuantity = Math.max(Number(line.requiredQuantity || 0) - line.issuedQuantity, 0);
-    line.issueStatus = line.remainingQuantity === 0 ? 'Issued' : 'Partially Issued';
-    issueLines.push({ materialName: line.materialName, requestedQuantity: line.requiredQuantity, issuedQuantity: issueQty, unit: line.unit, batches });
+  } finally {
+    session.endSession();
   }
-
-  item.issuedQuantity = item.items.reduce((total, line) => total + Number(line.issuedQuantity || 0), 0);
-  item.remainingQuantity = item.items.reduce((total, line) => total + Number(line.remainingQuantity || 0), 0);
-  item.totalIssuedValue = Number(item.totalIssuedValue || 0) + totalValue;
-  item.status = item.remainingQuantity === 0 ? 'Issued' : 'Partially Issued';
-  item.issues.push({ minNumber, issuedBy: req.user?.name || 'System', issuedAt: new Date(), warehouse: req.body.warehouse || item.warehouse, items: issueLines, totalValue, remarks: req.body.remarks });
-  item.audit.push({ action: 'Issued', by: req.user?.name || 'System', remarks: minNumber });
-  ok(res, await item.save(), 'Material issue note generated');
+  ok(res, saved, 'Material issue note generated');
 });
 
 exports.materialRequestStats = asyncHandler(async (req, res) => {
@@ -269,11 +418,16 @@ exports.analytics = asyncHandler(async (req, res) => {
   const totalStockValue = sum(raw, 'totalValue') + finished.reduce((total, row) => total + Number(row.availableQuantity || 0) * Number(row.unitCost || 0), 0);
   const stockIn = movements.reduce((total, row) => total + Number(row.quantityIn || 0), 0);
   const stockOut = movements.reduce((total, row) => total + Number(row.quantityOut || 0), 0);
+  const totalItems = raw.length + finished.length;
+  const totalQuantity = sum(raw, 'availableQuantity') + sum(finished, 'availableQuantity');
+  const hasInventoryData = totalItems > 0 || totalQuantity > 0 || totalStockValue > 0 || movements.length > 0 || batches.length > 0;
   const deadBatches = batches.filter((batch) => Number(batch.availableQuantity || 0) > 0 && ageDays(batch.createdAt) >= 180);
   const slowBatches = batches.filter((batch) => Number(batch.availableQuantity || 0) > 0 && ageDays(batch.createdAt) >= 60 && ageDays(batch.createdAt) < 180);
   const turnover = totalStockValue > 0 ? stockOut / ((totalStockValue + Math.max(totalStockValue - stockOut, 0)) / 2 || 1) : 0;
-  const inventoryAccuracy = raw.some((row) => Number(row.availableQuantity || 0) < 0) ? 90 : 99;
-  const healthScore = Math.max(0, Math.min(100, 85 + Math.min(turnover, 8) - deadBatches.length * 3 - slowBatches.length - (100 - inventoryAccuracy)));
+  const inventoryAccuracy = hasInventoryData ? (raw.some((row) => Number(row.availableQuantity || 0) < 0) ? 90 : 99) : 0;
+  const healthScore = hasInventoryData
+    ? Math.max(0, Math.min(100, 85 + Math.min(turnover, 8) - deadBatches.length * 3 - slowBatches.length - (100 - inventoryAccuracy)))
+    : 0;
 
   const warehouseAnalytics = warehouses.map((warehouse) => {
     const whRaw = raw.filter((row) => String(row.warehouse?._id || row.warehouse || '') === String(warehouse._id));
@@ -317,10 +471,10 @@ exports.analytics = asyncHandler(async (req, res) => {
 
   ok(res, {
     kpis: {
-      totalItems: raw.length + finished.length,
-      totalQuantity: sum(raw, 'availableQuantity') + sum(finished, 'availableQuantity'),
+      totalItems,
+      totalQuantity,
       openingStock: Math.max(stockIn - stockOut, 0),
-      closingStock: sum(raw, 'availableQuantity') + sum(finished, 'availableQuantity'),
+      closingStock: totalQuantity,
       totalStockValue,
       inventoryValue: totalStockValue,
       stockIn,
@@ -338,7 +492,7 @@ exports.analytics = asyncHandler(async (req, res) => {
       averageStockAge: batches.length ? Math.round(batches.reduce((total, batch) => total + ageDays(batch.createdAt), 0) / batches.length) : 0,
       inventoryAccuracy,
       inventoryHealthScore: Math.round(healthScore),
-      inventoryHealth: healthLabel(healthScore)
+      inventoryHealth: healthLabel(healthScore, hasInventoryData)
     },
     warehouseAnalytics,
     ageingBuckets,
