@@ -9,6 +9,7 @@ const WarehouseLocation = require('../models/WarehouseLocation');
 const Warehouse = require('../models/Warehouse');
 const BarcodeLabel = require('../models/BarcodeLabel');
 const Activity = require('../models/Activity');
+const MaterialCategory = require('../models/MaterialCategory');
 const { ok, created } = require('../utils/apiResponse');
 const { createMovement, receiveRawMaterialFromGRN, statusFor, updateWarehouseCapacity } = require('../services/stockService');
 
@@ -74,16 +75,76 @@ async function postMissingCompletedGrns() {
   }));
 }
 
+async function ensureRawMaterialStockInRows() {
+  const items = await MaterialCategory.find({ status: 'Active' });
+  await Promise.all(items.map(async (item) => {
+    const existing = await RawMaterialStock.findOne({
+      $or: [{ materialName: item.name }, { category: item.name }]
+    });
+    if (existing) return;
+    await RawMaterialStock.create({
+      materialName: item.name,
+      category: item.name,
+      unit: item.unit || 'm',
+      reorderLevel: Number(item.lowStockItems || 0),
+      availableQuantity: 0,
+      status: 'Out of Stock'
+    });
+  }));
+}
+
+const idKey = (value) => (value ? String(value) : 'none');
+
+async function consolidateFinishedGoodsStock() {
+  const rows = await FinishedGoodsStock.find().sort('createdAt');
+  const byIdentity = new Map();
+  const removals = [];
+
+  for (const row of rows) {
+    const key = [
+      row.sku,
+      row.productName || '',
+      row.size || '',
+      row.color || '',
+      idKey(row.warehouse),
+      idKey(row.location)
+    ].join('|');
+    const target = byIdentity.get(key);
+
+    if (!target) {
+      byIdentity.set(key, row);
+      continue;
+    }
+
+    target.availableQuantity = Math.max(Number(target.availableQuantity || 0), Number(row.availableQuantity || 0));
+    target.reservedQuantity = Math.max(Number(target.reservedQuantity || 0), Number(row.reservedQuantity || 0));
+    target.damagedQuantity = Math.max(Number(target.damagedQuantity || 0), Number(row.damagedQuantity || 0));
+    target.returnedQuantity = Math.max(Number(target.returnedQuantity || 0), Number(row.returnedQuantity || 0));
+    target.totalQuantity = Math.max(Number(target.totalQuantity || 0), Number(row.totalQuantity || 0));
+    target.unitCost = target.unitCost || row.unitCost;
+    target.sellingPrice = target.sellingPrice || row.sellingPrice;
+    target.reorderLevel = target.reorderLevel || row.reorderLevel;
+    target.status = statusFor(target.availableQuantity, target.reorderLevel);
+    removals.push(row._id);
+  }
+
+  await Promise.all([...byIdentity.values()].map((row) => row.save()));
+  if (removals.length) await FinishedGoodsStock.deleteMany({ _id: { $in: removals } });
+}
+
 exports.repairCompletedGrnStock = asyncHandler(async (req, res) => {
   await postMissingCompletedGrns();
   ok(res, null, 'Completed GRNs repaired');
 });
 
 exports.listRawMaterialStock = asyncHandler(async (req, res) => {
-  const { search = '', category, status, warehouse } = req.query;
+  const { search = '', category, status, warehouse, stockIn } = req.query;
   const { page, limit, skip } = pageParams(req.query);
-  const filter = { $and: [postedRawMaterialStockFilter] };
-  if (search) filter.$and.push({ $or: [{ materialName: new RegExp(search, 'i') }, { supplierName: new RegExp(search, 'i') }, { category: new RegExp(search, 'i') }] });
+  if (stockIn === 'true') await ensureRawMaterialStockInRows();
+  const filter = stockIn === 'true' ? {} : { $and: [postedRawMaterialStockFilter] };
+  const searchable = { $or: [{ materialName: new RegExp(search, 'i') }, { supplierName: new RegExp(search, 'i') }, { category: new RegExp(search, 'i') }] };
+  if (search && filter.$and) filter.$and.push(searchable);
+  if (search && !filter.$and) Object.assign(filter, searchable);
   if (category && category !== 'All Categories') filter.category = category;
   if (status && status !== 'All Status') filter.status = status;
   if (warehouse) filter.warehouse = warehouse;
@@ -152,12 +213,29 @@ exports.movementStats = asyncHandler(async (req, res) => {
 });
 
 exports.listFinishedGoods = asyncHandler(async (req, res) => {
-  const { search = '', status, warehouse } = req.query;
+  await consolidateFinishedGoodsStock();
+  const { search = '', status, warehouse, view } = req.query;
   const { page, limit, skip } = pageParams(req.query);
   const filter = {};
   if (search) filter.$or = [{ sku: new RegExp(search, 'i') }, { productName: new RegExp(search, 'i') }, { color: new RegExp(search, 'i') }, { size: new RegExp(search, 'i') }];
   if (status && status !== 'All Status') filter.status = status;
   if (warehouse) filter.warehouse = warehouse;
+
+  if (view === 'items') {
+    const rows = await FinishedGoodsStock.find(filter).populate('warehouse location').sort('createdAt');
+    const grouped = rows.reduce((map, row) => {
+      const key = [row.sku, row.productName || '', row.size || '', row.color || ''].join('|');
+      const current = map.get(key);
+      if (!current || (!row.warehouse && current.warehouse) || new Date(row.createdAt) < new Date(current.createdAt)) {
+        map.set(key, row);
+      }
+      return map;
+    }, new Map());
+    const items = [...grouped.values()].slice(skip, skip + limit);
+    ok(res, { items, total: grouped.size, page, pages: Math.ceil(grouped.size / limit) });
+    return;
+  }
+
   const [items, total] = await Promise.all([
     FinishedGoodsStock.find(filter).populate('warehouse location').sort('-createdAt').skip(skip).limit(limit),
     FinishedGoodsStock.countDocuments(filter)
@@ -174,6 +252,44 @@ exports.finishedGoodsStats = asyncHandler(async (req, res) => {
     damagedQuantity: rows.reduce((sum, row) => sum + row.damagedQuantity, 0),
     lowStock: rows.filter((row) => row.status === 'Low Stock' || row.availableQuantity <= row.reorderLevel).length
   });
+});
+
+exports.updateFinishedGoods = asyncHandler(async (req, res) => {
+  const allowed = [
+    'productName',
+    'sku',
+    'barcode',
+    'size',
+    'color',
+    'availableQuantity',
+    'reservedQuantity',
+    'damagedQuantity',
+    'returnedQuantity',
+    'totalQuantity',
+    'unitCost',
+    'sellingPrice',
+    'reorderLevel',
+    'status'
+  ];
+  const payload = allowed.reduce((next, key) => {
+    if (req.body[key] !== undefined) next[key] = req.body[key];
+    return next;
+  }, {});
+
+  if (payload.totalQuantity === undefined && ['availableQuantity', 'reservedQuantity', 'damagedQuantity', 'returnedQuantity'].some((key) => payload[key] !== undefined)) {
+    const current = await FinishedGoodsStock.findById(req.params.id);
+    if (!current) throw new Error('Finished goods stock not found');
+    payload.totalQuantity = ['availableQuantity', 'reservedQuantity', 'damagedQuantity', 'returnedQuantity']
+      .reduce((sum, key) => sum + Number(payload[key] ?? current[key] ?? 0), 0);
+  }
+
+  if (payload.availableQuantity !== undefined) {
+    payload.status = statusFor(payload.availableQuantity, payload.reorderLevel ?? 25);
+  }
+
+  const item = await FinishedGoodsStock.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true });
+  if (!item) throw new Error('Finished goods stock not found');
+  ok(res, item, 'Finished goods stock updated');
 });
 
 exports.listBarcodeLabels = asyncHandler(async (req, res) => {
@@ -316,11 +432,11 @@ exports.stockIn = asyncHandler(async (req, res) => {
   if (!sourceStock) throw new Error('Stock item not found');
   const warehouseId = destinationWarehouse || sourceStock.warehouse;
   if (!warehouseId) throw new Error('Destination warehouse is required');
-  const locationId = destinationLocation || undefined;
+  const locationId = destinationLocation || null;
   const identity = stockIdentity(sourceStock, itemType);
   const stockFilter = itemType === 'FINISHED_GOOD'
-    ? { sku: sourceStock.sku, warehouse: warehouseId, location: locationId }
-    : { materialName: sourceStock.materialName, category: sourceStock.category, warehouse: warehouseId, location: locationId };
+    ? { sku: sourceStock.sku, warehouse: warehouseId, location: locationId ? locationId : { $in: [null, undefined] } }
+    : { materialName: sourceStock.materialName, category: sourceStock.category, warehouse: warehouseId, location: locationId ? locationId : { $in: [null, undefined] } };
 
   const stock = await Model.findOneAndUpdate(
     stockFilter,
@@ -328,7 +444,7 @@ exports.stockIn = asyncHandler(async (req, res) => {
       $setOnInsert: {
         ...identity,
         warehouse: warehouseId,
-        location: locationId,
+        location: locationId || undefined,
         unit: sourceStock.unit,
         unitCost: sourceStock.unitCost,
         reorderLevel: sourceStock.reorderLevel,

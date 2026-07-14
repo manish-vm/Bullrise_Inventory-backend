@@ -12,6 +12,9 @@ router.get('/stock-movements/:id', c.getMovement);
 router.get('/stock-movements', c.listMovements);
 router.get('/finished-goods-stock/stats', c.finishedGoodsStats);
 router.get('/finished-goods-stock', c.listFinishedGoods);
+router.route('/finished-goods-stock/:id')
+  .put(validateUpdate(v.finishedGoodsStock), c.updateFinishedGoods)
+  .patch(validateUpdate(v.finishedGoodsStock), c.updateFinishedGoods);
 router.get('/barcode-labels/stats', c.barcodeLabelStats);
 router.patch('/barcode-labels/mark-printed', validateCreate(v.barcodePrinted), c.markBarcodePrinted);
 router.route('/barcode-labels').get(c.listBarcodeLabels).post(validateCreate(v.barcodeLabel), c.createBarcodeLabel);
