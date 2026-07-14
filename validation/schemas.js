@@ -132,6 +132,12 @@ module.exports = {
   location: { warehouse: { ...id, required: true }, warehouseCode: str(), name: str(true), code: str(true), type: str(), capacity: num(false), usedCapacity: num(false), status: { type: 'string', enum: status.location } },
   barcodeLabel: { sku: str(true), barcode: str(true), productName: str(), quantity: num(false, 1), labelStatus: { type: 'string', enum: status.label }, referenceType: str(), referenceId: str() },
   barcodePrinted: { ids: { type: 'array', min: 1, of: { value: id } } },
+  finishedGoodsStock: {
+    productName: str(), sku: str(), barcode: str(), size: str(), color: str(),
+    availableQuantity: num(false), reservedQuantity: num(false), damagedQuantity: num(false), returnedQuantity: num(false),
+    totalQuantity: num(false), unitCost: num(false), sellingPrice: num(false), reorderLevel: num(false),
+    status: { type: 'string', enum: ['In Stock', 'Low Stock', 'Out of Stock'] },
+  },
   stockTransaction: { itemType: { type: 'string', required: true, enum: status.itemType }, stockId: { ...id, required: true }, quantity: num(true, 1), destinationWarehouse: id, destinationLocation: id, remarks: str(), reason: str(), direction: { type: 'string', enum: status.direction } },
   stockTransfer: { itemType: { type: 'string', required: true, enum: status.itemType }, stockId: { ...id, required: true }, quantity: num(true, 1), destinationWarehouse: { ...id, required: true }, destinationLocation: id, remarks: str() },
   workOrder: { woNumber: str(true), bomId: id, product: id, variant: id, productStyle: str(), department: str(), priority: { type: 'string', enum: status.priority }, plannedQty: num(false), completedQty: num(false), status: { type: 'string', enum: status.workOrder }, startDate: date, endDate: date, dueDate: date },
