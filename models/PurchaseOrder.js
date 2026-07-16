@@ -18,7 +18,7 @@ const purchaseOrderSchema = new mongoose.Schema({
   poNumber: { type: String, required: true, unique: true },
   quotationNumber: String,
   quotationDate: Date,
-  purchaseType: { type: String, enum: ['Raw Material Purchase', 'Ready Product Purchase', 'E-Commerce Purchase'], default: 'Raw Material Purchase' },
+  purchaseType: { type: String, enum: ['Raw Material Purchase', 'Ready Product Purchase', 'Readymade Product Purchase', 'E-Commerce Purchase'], default: 'Raw Material Purchase' },
   paymentMode: { type: String, enum: ['Cash', 'Credit'], default: 'Credit' },
   creditDays: { type: Number, enum: [0, 30, 60], default: 30 },
   supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', required: true },
@@ -31,6 +31,8 @@ const purchaseOrderSchema = new mongoose.Schema({
   unit: { type: String, enum: ['m', 'pcs'], default: 'm' },
   receivedQuantity: { type: Number, default: 0 },
   status: { type: String, enum: ['Draft', 'Sent', 'Open', 'Partially Received', 'Completed', 'Cancelled'], default: 'Open' },
+  stockPosted: { type: Boolean, default: false },
+  stockPostedAt: Date,
   items: [purchaseOrderItemSchema]
 }, { timestamps: true });
 
@@ -52,7 +54,7 @@ purchaseOrderSchema.pre('validate', function calculatePoBalances() {
     this.unit = this.items[0].unit || this.unit;
     this.totalAmount = this.items.reduce((total, item) => total + Number(item.amount || 0), 0);
   }
-  if (this.status !== 'Cancelled' && this.items.length) {
+  if (!['Cancelled', 'Completed'].includes(this.status) && this.items.length) {
     if (this.receivedQuantity <= 0) this.status = this.status === 'Draft' || this.status === 'Sent' ? this.status : 'Open';
     else if (this.receivedQuantity < this.orderedQuantity) this.status = 'Partially Received';
     else this.status = 'Completed';

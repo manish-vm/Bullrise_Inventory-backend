@@ -200,6 +200,109 @@ async function receiveRawMaterialFromGRN(receipt) {
   return stocks;
 }
 
+async function receiveRawMaterialFromPO(po) {
+  if (po.status !== 'Completed' || po.stockPosted) return [];
+
+  const warehouse = await defaultWarehouse('RAW_MATERIAL');
+  const lines = po.items?.length ? po.items : [{
+    lineNo: 1,
+    materialName: po.category || 'Raw Material',
+    category: po.category,
+    quantity: Number(po.orderedQuantity || 0),
+    unit: po.unit || 'm',
+    unitPrice: Number(po.orderedQuantity || 0) ? Number(po.totalAmount || 0) / Number(po.orderedQuantity || 1) : 0
+  }];
+
+  const stocks = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const quantity = Number(line.quantity || 0);
+    if (quantity <= 0) continue;
+
+    const unitCost = Number(line.unitPrice || (quantity ? Number(line.amount || 0) / quantity : 0));
+    const materialName = line.materialName || line.category || po.category || 'Raw Material';
+    const category = line.category || po.category;
+    const batchNo = `${po.poNumber}-L${line.lineNo || index + 1}`;
+
+    const stock = await RawMaterialStock.findOneAndUpdate(
+      {
+        materialName,
+        category,
+        supplier: po.supplier || undefined,
+        warehouse: warehouse?._id
+      },
+      {
+        $setOnInsert: {
+          materialName,
+          category,
+          supplier: po.supplier,
+          supplierName: po.supplierName,
+          warehouse: warehouse?._id,
+          unit: normalizeUnit(line.unit || po.unit)
+        },
+        $inc: {
+          availableQuantity: quantity,
+          totalValue: quantity * unitCost
+        },
+        $set: { unitCost }
+      },
+      { new: true, upsert: true }
+    );
+
+    stock.status = statusFor(stock.availableQuantity, stock.reorderLevel);
+    await stock.save();
+
+    const materialItem = await MaterialCategory.findOne({ name: { $in: [materialName, category].filter(Boolean) } });
+    if (materialItem) {
+      materialItem.totalMaterials = stock.availableQuantity;
+      materialItem.unit = normalizeUnit(stock.unit || line.unit || po.unit, materialItem.unit);
+      await materialItem.save();
+    }
+
+    await MaterialBatch.findOneAndUpdate(
+      { batchNo },
+      {
+        batchNo,
+        materialName,
+        category,
+        supplier: po.supplier,
+        supplierName: po.supplierName,
+        warehouse: warehouse?._id,
+        poNumber: po.poNumber,
+        quantityReceived: quantity,
+        acceptedQuantity: quantity,
+        rejectedQuantity: 0,
+        availableQuantity: quantity,
+        unit: normalizeUnit(line.unit || po.unit),
+        unitCost,
+        totalValue: quantity * unitCost,
+        status: 'Available'
+      },
+      { new: true, upsert: true }
+    );
+
+    await createMovement({
+      movementType: 'PO_COMPLETED',
+      itemType: 'RAW_MATERIAL',
+      referenceType: 'PurchaseOrder',
+      referenceId: String(po._id),
+      materialId: materialName,
+      warehouseId: warehouse?._id,
+      batchNo,
+      quantityIn: quantity,
+      balanceAfter: stock.availableQuantity,
+      unitCost,
+      totalValue: quantity * unitCost,
+      remarks: `${po.poNumber} completed ${materialName} from ${po.supplierName || 'supplier'}`
+    });
+
+    stocks.push(stock);
+  }
+
+  po.stockPosted = true;
+  return stocks;
+}
+
 async function reserveRawMaterial({ materialName, category, quantity, referenceType, referenceId, remarks }) {
   let remaining = Number(quantity || 0);
   const stocks = await RawMaterialStock.find(rawMaterialStockFilter({ materialName, category })).sort({ availableQuantity: -1 });
@@ -308,6 +411,7 @@ module.exports = {
   createMovement,
   updateWarehouseCapacity,
   receiveRawMaterialFromGRN,
+  receiveRawMaterialFromPO,
   reserveRawMaterial,
   postFinishedGoods,
   statusFor,

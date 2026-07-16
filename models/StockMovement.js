@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const movementTypes = [
   'GRN_RECEIVED',
+  'PO_COMPLETED',
   'SUPPLIER_RETURN',
   'MATERIAL_RESERVED',
   'MATERIAL_CONSUMED',

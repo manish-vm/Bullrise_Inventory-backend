@@ -4,7 +4,14 @@ const Supplier = require('../models/Supplier');
 const PurchaseOrder = require('../models/PurchaseOrder');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
-const { receiveRawMaterialFromGRN } = require('../services/stockService');
+
+async function nextGrnNumber() {
+  const year = new Date().getFullYear();
+  const prefix = `GRN-${year}-`;
+  const latest = await GoodReceipt.findOne({ grnNumber: new RegExp(`^${prefix}`) }).sort({ grnNumber: -1 }).select('grnNumber');
+  const next = Number(String(latest?.grnNumber || '').split('-').pop() || 0) + 1;
+  return `${prefix}${String(next).padStart(4, '0')}`;
+}
 
 function lineKey(line = {}) {
   return String(line.poLineNo || line.lineNo || line.materialName || line.category || '').toLowerCase();
@@ -171,6 +178,16 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
   await assertSingleReceiptPerPurchaseOrder(req.body.poNumber);
   const supplier = req.body.supplier ? await Supplier.findById(req.body.supplier) : null;
   const po = req.body.poNumber ? await PurchaseOrder.findOne({ poNumber: req.body.poNumber }) : null;
+  if (req.body.poNumber && !po) {
+    res.status(400);
+    throw new Error('Select a valid purchase order before creating GRN');
+  }
+  if (po && po.status === 'Cancelled') {
+    res.status(400);
+    throw new Error(`Cannot create GRN for ${po.status.toLowerCase()} purchase order`);
+  }
+  const requestedGrnNumber = String(req.body.grnNumber || '').trim();
+  const grnNumber = requestedGrnNumber && requestedGrnNumber !== 'Auto Generate' ? requestedGrnNumber : await nextGrnNumber();
   const receiptItems = receiptLinesFromBody(req.body, po);
   await assertReceiptWithinBalance(po, receiptItems);
 
@@ -178,6 +195,7 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
   const receiptValue = receiptItems.reduce((sum, item) => sum + Number(item.totalValue || (Number(item.acceptedQuantity || 0) * Number(item.unitCost || 0))), 0);
   const receipt = await GoodReceipt.create({
     ...req.body,
+    grnNumber,
     supplierName: req.body.supplierName || supplier?.name || po?.supplierName,
     supplier: req.body.supplier || po?.supplier,
     category: req.body.category || receiptItems[0]?.category,
@@ -188,14 +206,6 @@ exports.createGoodReceipt = asyncHandler(async (req, res) => {
     receiptValue: req.body.receiptValue || receiptValue
   });
   receipt.goodsReceivedDate = receipt.goodsReceivedDate || receipt.receiptDate;
-  if (receipt.status === 'Completed') {
-    await receiveRawMaterialFromGRN(receipt);
-    receipt.stockPosted = true;
-    receipt.approvedBy = req.user?.name || 'System';
-    receipt.approvedAt = new Date();
-    await receipt.save();
-  }
-
   if (po && receipt.status === 'Completed') {
     await syncPurchaseOrderFromReceipts(po);
     await po.save();
@@ -222,13 +232,6 @@ exports.updateGoodReceipt = asyncHandler(async (req, res) => {
   Object.assign(receipt, req.body);
   receipt.goodsReceivedDate = receipt.goodsReceivedDate || receipt.receiptDate;
 
-  if (receipt.status === 'Completed' && !receipt.stockPosted) {
-    await receiveRawMaterialFromGRN(receipt);
-    receipt.stockPosted = true;
-    receipt.approvedBy = req.user?.name || receipt.approvedBy || 'System';
-    receipt.approvedAt = receipt.approvedAt || new Date();
-  }
-
   await receipt.save();
   ok(res, receipt);
 });
@@ -237,7 +240,7 @@ exports.deleteGoodReceipt = asyncHandler(async (req, res) => { await GoodReceipt
 exports.transferGoodReceipt = asyncHandler(async (req, res) => {
   const receipt = await GoodReceipt.findById(req.params.id);
   if (!receipt) throw new Error('GRN not found');
-  if (!receipt.stockPosted) throw new Error('Approve and post GRN before transfer');
+  if (!['Completed', 'Rejected'].includes(receipt.status)) throw new Error('Approve GRN before transfer');
   receipt.transferStatus = 'Transferred';
   receipt.transferredAt = new Date();
   receipt.transferredBy = req.user?.name || 'System';
@@ -255,7 +258,7 @@ exports.transferGoodReceipt = asyncHandler(async (req, res) => {
 exports.approveGoodReceipt = asyncHandler(async (req, res) => {
   const receipt = await GoodReceipt.findById(req.params.id);
   if (!receipt) throw new Error('GRN not found');
-  if (receipt.stockPosted) throw new Error('GRN is already approved and posted to stock');
+  if (receipt.approvedAt) throw new Error('GRN is already approved');
 
   const po = receipt.poNumber ? await PurchaseOrder.findOne({ poNumber: receipt.poNumber }) : null;
   const incomingItems = req.body.items?.length ? req.body.items : receipt.items;
@@ -294,11 +297,6 @@ exports.approveGoodReceipt = asyncHandler(async (req, res) => {
   receipt.approvedBy = req.user?.name || req.body.approvedBy || 'System';
   receipt.approvedAt = new Date();
   receipt.approvalRemarks = req.body.remarks;
-
-  if (acceptedTotal > 0) {
-    await receiveRawMaterialFromGRN(receipt);
-    receipt.stockPosted = true;
-  }
 
   await receipt.save();
 

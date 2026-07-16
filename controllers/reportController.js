@@ -257,7 +257,7 @@ exports.purchaseDetails = asyncHandler(async (req, res) => {
       cashValue: sum(items.filter((row) => row.paymentMode === 'Cash'), 'totalAmount'),
       creditValue: sum(items.filter((row) => row.paymentMode === 'Credit'), 'totalAmount'),
       ecommerceValue: sum(items.filter((row) => row.purchaseType === 'E-Commerce Purchase'), 'totalAmount'),
-      readyProductValue: sum(items.filter((row) => row.purchaseType === 'Ready Product Purchase'), 'totalAmount')
+      readyProductValue: sum(items.filter((row) => ['Ready Product Purchase', 'Readymade Product Purchase'].includes(row.purchaseType)), 'totalAmount')
     },
     items
   });
