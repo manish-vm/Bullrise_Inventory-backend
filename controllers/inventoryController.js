@@ -11,7 +11,7 @@ const BarcodeLabel = require('../models/BarcodeLabel');
 const Activity = require('../models/Activity');
 const MaterialCategory = require('../models/MaterialCategory');
 const { ok, created } = require('../utils/apiResponse');
-const { createMovement, receiveRawMaterialFromGRN, statusFor, updateWarehouseCapacity } = require('../services/stockService');
+const { createMovement, statusFor, updateWarehouseCapacity } = require('../services/stockService');
 
 const pageParams = (query) => {
   const page = Number(query.page || 1);
@@ -61,18 +61,7 @@ async function repairZeroValueRawMaterialStock(items) {
 }
 
 async function postMissingCompletedGrns() {
-  const receipts = await GoodReceipt.find({
-    status: 'Completed',
-    stockPosted: { $ne: true }
-  });
-
-  await Promise.all(receipts.map(async (receipt) => {
-    await receiveRawMaterialFromGRN(receipt);
-    receipt.stockPosted = true;
-    receipt.approvedBy = receipt.approvedBy || 'System';
-    receipt.approvedAt = receipt.approvedAt || new Date();
-    await receipt.save();
-  }));
+  return null;
 }
 
 async function ensureRawMaterialStockInRows() {

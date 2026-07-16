@@ -3,7 +3,7 @@ const status = {
   po: ['Open', 'Partially Received', 'Completed', 'Cancelled'],
   poLine: ['Open', 'Partially Received', 'Completed', 'Rejected'],
   grn: ['Completed', 'Under QC', 'Pending', 'Rejected'],
-  purchaseType: ['Raw Material Purchase', 'Ready Product Purchase', 'E-Commerce Purchase'],
+  purchaseType: ['Raw Material Purchase', 'Ready Product Purchase', 'Readymade Product Purchase', 'E-Commerce Purchase'],
   paymentMode: ['Cash', 'Credit'],
   transferStatus: ['Not Transferred', 'Ready To Transfer', 'Transferred'],
   stockReturn: ['Approved', 'Pending', 'Rejected', 'Draft'],
@@ -88,7 +88,7 @@ module.exports = {
   userCreate: { name: str(true), email: str(true), phone: str(), role: { type: 'string', enum: status.roles }, status: { type: 'string', enum: status.active }, password: str(true) },
   userUpdate: { name: str(), email: str(), phone: str(), role: { type: 'string', enum: status.roles }, status: { type: 'string', enum: status.active }, password: str() },
   supplier: {
-    supplierCode: str(true), name: str(true), initials: str(), contactPerson: str(true), designation: str(),
+    supplierCode: str(), name: str(true), initials: str(), contactPerson: str(true), designation: str(),
     category: str(true), city: str(), phone: str(true), email: str(true), status: { type: 'string', enum: status.active }, ordersCount: num(false),
   },
   materialCategory: {
@@ -114,7 +114,7 @@ module.exports = {
     items: { type: 'array', of: poItem },
   },
   goodReceipt: {
-    grnNumber: str(true), poNumber: str(), supplier: id, supplierName: str(), category: str(), receiptDate: date, goodsReceivedDate: date,
+    grnNumber: str(), poNumber: str(), supplier: id, supplierName: str(), category: str(), receiptDate: date, goodsReceivedDate: date,
     itemsCount: num(false), quantity: num(false), unit: str(), receivedBy: str(), qcInspector: str(), receiptValue: num(false), items: { type: 'array', of: grnItem },
     transferStatus: { type: 'string', enum: status.transferStatus }, status: { type: 'string', enum: status.grn },
   },

@@ -22,6 +22,16 @@ function withOrderCount(supplier, counts) {
 
 const splitCategories = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
 const escapeRegex = (value) => String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const supplierCodePattern = /^SUP-(\d+)$/;
+
+async function nextSupplierCode() {
+  const suppliers = await Supplier.find({ supplierCode: supplierCodePattern }).select('supplierCode').lean();
+  const lastNumber = suppliers.reduce((max, supplier) => {
+    const match = supplierCodePattern.exec(supplier.supplierCode || '');
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `SUP-${String(lastNumber + 1).padStart(3, '0')}`;
+}
 
 exports.getSuppliers = asyncHandler(async (req, res) => {
   const { search = '', status, category, city, page = 1, limit = 10 } = req.query;
@@ -40,7 +50,9 @@ exports.getSuppliers = asyncHandler(async (req, res) => {
 });
 
 exports.createSupplier = asyncHandler(async (req, res) => {
-  const supplier = await Supplier.create(req.body);
+  const payload = { ...req.body };
+  if (!payload.supplierCode) payload.supplierCode = await nextSupplierCode();
+  const supplier = await Supplier.create(payload);
   await Activity.create({ module: 'suppliers', title: 'New Supplier Added', description: `${supplier.name} added successfully`, dateText: new Date().toLocaleString(), type: 'success' });
   created(res, supplier);
 });

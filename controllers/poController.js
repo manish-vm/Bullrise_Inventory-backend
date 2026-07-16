@@ -3,6 +3,7 @@ const PurchaseOrder = require('../models/PurchaseOrder');
 const Supplier = require('../models/Supplier');
 const Activity = require('../models/Activity');
 const { ok, created } = require('../utils/apiResponse');
+const { receiveRawMaterialFromPO } = require('../services/stockService');
 
 async function nextPurchaseOrderNumber() {
   const year = new Date().getFullYear();
@@ -101,6 +102,11 @@ exports.getPurchaseOrder = asyncHandler(async (req, res) => ok(res, await Purcha
 exports.updatePurchaseOrder = asyncHandler(async (req, res) => {
   const po = await PurchaseOrder.findById(req.params.id);
   if (!po) throw new Error('Purchase order not found');
+  const previousStatus = po.status;
+  if (req.body.status === 'Cancelled' && (Number(po.receivedQuantity || 0) > 0 || po.stockPosted)) {
+    res.status(400);
+    throw new Error('Purchase orders already received or posted to stock cannot be cancelled');
+  }
   Object.assign(po, req.body);
   po.creditDays = po.paymentMode === 'Cash' ? 0 : Number(po.creditDays || 30);
   if (req.body.orderedQuantity != null && po.items?.length === 1) {
@@ -110,7 +116,25 @@ exports.updatePurchaseOrder = asyncHandler(async (req, res) => {
     po.items[0].receivedQuantity = Number(req.body.receivedQuantity || 0);
   }
   applyPoTotals(po);
+  if (po.status === 'Completed' && po.items.length) {
+    po.items = po.items.map((item) => ({
+      ...item.toObject?.() || item,
+      receivedQuantity: Number(item.quantity || 0),
+      rejectedQuantity: Number(item.rejectedQuantity || 0),
+      balanceQuantity: 0,
+      status: 'Completed'
+    }));
+    po.orderedQuantity = po.items.reduce((sum, item) => sum + Number(item.quantity || 0), 0);
+    po.receivedQuantity = po.orderedQuantity;
+  }
+  if (po.status === 'Completed' && !po.stockPosted) {
+    await receiveRawMaterialFromPO(po);
+    po.stockPostedAt = new Date();
+  }
   await po.save();
+  if (previousStatus !== 'Cancelled' && po.status === 'Cancelled') {
+    await Activity.create({ module: 'purchase-orders', title: `${po.poNumber} cancelled`, description: 'Purchase order cancelled', dateText: new Date().toLocaleString(), type: 'danger' });
+  }
   ok(res, po);
 });
 exports.deletePurchaseOrder = asyncHandler(async (req, res) => { await PurchaseOrder.findByIdAndDelete(req.params.id); ok(res, null, 'Deleted'); });
